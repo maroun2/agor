@@ -69,12 +69,15 @@ export const ALLOWED_ENV_VARS = new Set([
   'NODE_PATH',
   'NODE_EXTRA_CA_CERTS',
 
-  // Git identity
+  // Git identity and configuration
   'GIT_AUTHOR_NAME',
   'GIT_AUTHOR_EMAIL',
   'GIT_COMMITTER_NAME',
   'GIT_COMMITTER_EMAIL',
   'GIT_SSH_COMMAND',
+  'GIT_ASKPASS', // Credential helper (often set to suppress interactive prompts)
+  'GIT_EDITOR', // Editor for commit messages
+  'GIT_TERMINAL_PROMPT', // Prevent git from hanging on credential prompts
 
   // Anthropic / AI SDK
   'ANTHROPIC_API_KEY',
@@ -83,6 +86,9 @@ export const ALLOWED_ENV_VARS = new Set([
   'OPENAI_API_KEY',
   'GEMINI_API_KEY',
   'GOOGLE_API_KEY',
+
+  // Corepack / package manager
+  'COREPACK_ENABLE_AUTO_PIN',
 
   // Agor session context (safe for executor/sessions)
   'DAEMON_URL',
@@ -95,6 +101,7 @@ export const ALLOWED_ENV_VARS = new Set([
 export const ALLOWED_ENV_PREFIXES = [
   'LC_', // Locale settings (LC_ALL, LC_CTYPE, etc.)
   'XDG_', // Freedesktop directories (XDG_DATA_HOME, XDG_CONFIG_HOME, etc.)
+  'CLAUDE_', // Claude Code SDK/CLI configuration (entrypoint, version, etc.)
 ];
 
 /**
