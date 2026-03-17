@@ -1974,30 +1974,39 @@ async function main() {
   // Notify UI that OAuth authentication is needed for MCP servers
   // Called by executor when MCP servers require authentication
   app.use('/mcp-servers/oauth-notify', {
-    async create(data: {
-      session_id: string;
-      user_id?: string;
-      servers: Array<{ name: string; serverId: string; url: string }>;
-    }) {
-      const payload = {
+    async create(
+      data: {
+        session_id: string;
+        user_id?: string;
+        servers: Array<{ name: string; serverId: string; url: string }>;
+      },
+      params?: AuthenticatedParams
+    ) {
+      // Derive target user server-side, fail closed on missing user
+      // - Service accounts (executor): trust data.user_id from payload
+      // - Authenticated users: always use their own identity, ignore payload
+      const isServiceAccount =
+        (params?.user as unknown as Record<string, unknown> | undefined)?._isServiceAccount ===
+        true;
+      const targetUserId = isServiceAccount ? data.user_id : params?.user?.user_id;
+
+      if (!targetUserId) {
+        console.warn(
+          `[OAuth Notify] No target user resolved for session ${data.session_id}, ` +
+            `servers: ${data.servers.map((s) => s.name).join(', ')}. Skipping emit.`
+        );
+        return { success: false, reason: 'no_target_user' };
+      }
+
+      console.log(
+        `[OAuth Notify] Emitting oauth:auth_required to user ${targetUserId.substring(0, 8)} ` +
+          `for session ${data.session_id}, servers: ${data.servers.map((s) => s.name).join(', ')}`
+      );
+
+      app.io.to(`user:${targetUserId}`).emit('oauth:auth_required', {
         session_id: data.session_id,
         servers: data.servers,
-      };
-
-      if (data.user_id) {
-        console.log(
-          `[OAuth Notify] Emitting oauth:auth_required to user ${data.user_id.substring(0, 8)} ` +
-            `for session ${data.session_id}, servers: ${data.servers.map((s) => s.name).join(', ')}`
-        );
-        app.io.to(`user:${data.user_id}`).emit('oauth:auth_required', payload);
-      } else {
-        // Fallback: broadcast if user_id not provided (legacy callers)
-        console.warn(
-          `[OAuth Notify] No user_id provided, broadcasting oauth:auth_required to all clients ` +
-            `for session ${data.session_id}, servers: ${data.servers.map((s) => s.name).join(', ')}`
-        );
-        app.io.emit('oauth:auth_required', payload);
-      }
+      });
 
       return { success: true };
     },
