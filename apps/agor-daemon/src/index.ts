@@ -1976,18 +1976,28 @@ async function main() {
   app.use('/mcp-servers/oauth-notify', {
     async create(data: {
       session_id: string;
+      user_id?: string;
       servers: Array<{ name: string; serverId: string; url: string }>;
     }) {
-      console.log(
-        `[OAuth Notify] Broadcasting oauth_auth_required for session ${data.session_id}, ` +
-          `servers: ${data.servers.map((s) => s.name).join(', ')}`
-      );
-
-      // Broadcast to all authenticated clients
-      app.io.emit('oauth:auth_required', {
+      const payload = {
         session_id: data.session_id,
         servers: data.servers,
-      });
+      };
+
+      if (data.user_id) {
+        console.log(
+          `[OAuth Notify] Emitting oauth:auth_required to user ${data.user_id.substring(0, 8)} ` +
+            `for session ${data.session_id}, servers: ${data.servers.map((s) => s.name).join(', ')}`
+        );
+        app.io.to(`user:${data.user_id}`).emit('oauth:auth_required', payload);
+      } else {
+        // Fallback: broadcast if user_id not provided (legacy callers)
+        console.warn(
+          `[OAuth Notify] No user_id provided, broadcasting oauth:auth_required to all clients ` +
+            `for session ${data.session_id}, servers: ${data.servers.map((s) => s.name).join(', ')}`
+        );
+        app.io.emit('oauth:auth_required', payload);
+      }
 
       return { success: true };
     },
