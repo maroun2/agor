@@ -425,7 +425,39 @@ export async function createWorktree(
     args.push(ref);
   }
 
-  await git.raw(['worktree', 'add', ...args]);
+  try {
+    await git.raw(['worktree', 'add', ...args]);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Handle stale branch from previously deleted worktree
+    if (createBranch && errorMessage.includes('already exists')) {
+      console.warn(
+        `⚠️  Branch '${ref}' already exists. Checking if it's orphaned (stale from a deleted worktree)...`
+      );
+
+      // Check if the branch is in use by another worktree
+      const worktrees = await listWorktrees(repoPath);
+      const branchInUse = worktrees.some((wt) => wt.ref === ref);
+
+      if (branchInUse) {
+        throw new Error(
+          `A branch named '${ref}' already exists and is in use by another worktree. ` +
+            `Please choose a different name.`
+        );
+      }
+
+      // Branch exists but is orphaned — delete it and retry
+      console.log(`🧹 Deleting orphaned branch '${ref}' and retrying worktree creation...`);
+      await git.raw(['branch', '-D', ref]);
+
+      // Retry the worktree creation
+      await git.raw(['worktree', 'add', ...args]);
+      console.log(`✅ Successfully created worktree after cleaning up stale branch '${ref}'`);
+    } else {
+      throw error;
+    }
+  }
 
   // Add worktree to safe.directory to prevent "dubious ownership" errors
   // This is needed when worktrees are owned by a different user (e.g., daemon user)
@@ -737,6 +769,30 @@ export async function deleteWorktreeDirectory(worktreePath: string): Promise<voi
   }
 
   await rm(resolvedWorktreePath, { recursive: true, force: true });
+}
+
+/**
+ * Delete a local git branch
+ *
+ * Uses -D (force delete) to handle branches that haven't been merged.
+ * Silently succeeds if the branch doesn't exist.
+ *
+ * @param repoPath - Path to the repository
+ * @param branchName - Branch name to delete
+ * @returns true if branch was deleted, false if it didn't exist
+ */
+export async function deleteBranch(repoPath: string, branchName: string): Promise<boolean> {
+  const git = createGit(repoPath);
+  try {
+    await git.raw(['branch', '-D', branchName]);
+    return true;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes('not found')) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 /**

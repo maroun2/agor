@@ -24,7 +24,14 @@ import {
 import { type Database, RepoRepository, WorktreeRepository } from '@agor/core/db';
 import { autoAssignWorktreeUniqueId } from '@agor/core/environment/variable-resolver';
 import type { Application } from '@agor/core/feathers';
-import { getDefaultBranch, getRemoteUrl, getWorktreePath, isValidGitRepo } from '@agor/core/git';
+import {
+  getDefaultBranch,
+  getRemoteUrl,
+  getWorktreePath,
+  isValidGitRepo,
+  listWorktrees,
+  simpleGit,
+} from '@agor/core/git';
 import type {
   AuthenticatedParams,
   QueryParams,
@@ -337,6 +344,43 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
     );
     if (existingWorktree) {
       throw new Error(`A worktree named '${data.name}' already exists in this repository`);
+    }
+
+    // Pre-flight check: detect stale or conflicting branches before creating DB record
+    // This gives the user immediate feedback instead of a silent fire-and-forget failure
+    if (data.createBranch && repo.local_path) {
+      try {
+        const git = simpleGit(repo.local_path);
+        const branches = await git.branch();
+        const branchName = data.ref || data.name;
+
+        if (branches.all.includes(branchName)) {
+          // Branch exists — check if it's in use by another worktree
+          const gitWorktrees = await listWorktrees(repo.local_path);
+          const branchInUse = gitWorktrees.some((wt: { ref?: string }) => wt.ref === branchName);
+
+          if (branchInUse) {
+            throw new Error(
+              `A branch named '${branchName}' already exists and is in use by another worktree. Please choose a different name.`
+            );
+          }
+
+          // Branch exists but is orphaned — the executor will clean it up automatically
+          console.log(
+            `⚠️  Branch '${branchName}' exists but is orphaned (stale). Executor will clean it up.`
+          );
+        }
+      } catch (error) {
+        // Re-throw user-facing errors (branch conflicts)
+        if (error instanceof Error && error.message.includes('already exists and is in use')) {
+          throw error;
+        }
+        // Log but don't block creation for other git errors (e.g., repo not accessible)
+        console.warn(
+          `⚠️  Pre-flight branch check failed (continuing anyway):`,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
     }
 
     const worktreePath = getWorktreePath(repo.slug, data.name);

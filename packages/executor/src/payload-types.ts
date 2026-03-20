@@ -292,6 +292,12 @@ export const GitWorktreeRemovePayloadSchema = BasePayloadSchema.extend({
 
     /** Delete DB record after removal (default: true) */
     deleteDbRecord: z.boolean().optional().default(true),
+
+    /** Branch name to delete after worktree removal */
+    branch: z.string().optional(),
+
+    /** Whether to delete the branch after worktree removal (default: false) */
+    deleteBranch: z.boolean().optional().default(false),
   }),
 });
 

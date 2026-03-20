@@ -21,6 +21,7 @@ import {
   cleanWorktree,
   cloneRepo,
   createWorktree,
+  deleteBranch,
   getReposDir,
   removeWorktree,
 } from '@agor/core/git';
@@ -541,11 +542,17 @@ export async function handleGitWorktreeAdd(
       }
     }
 
+    // Provide user-friendly error messages for common failures
+    let userMessage = errorMessage;
+    if (errorMessage.includes('already exists') && errorMessage.includes('branch')) {
+      userMessage = `A branch named '${payload.params.branch || payload.params.worktreeName}' already exists and is in use by another worktree. Please choose a different name.`;
+    }
+
     return {
       success: false,
       error: {
         code: 'GIT_WORKTREE_ADD_FAILED',
-        message: errorMessage,
+        message: userMessage,
         details: {
           worktreeId,
           repoId: payload.params.repoId,
@@ -641,6 +648,28 @@ export async function handleGitWorktreeRemove(
       filesystemRemoved = true;
 
       console.log(`[git.worktree.remove] Worktree removed from filesystem`);
+
+      // Delete the associated branch if requested
+      if (payload.params.deleteBranch && payload.params.branch) {
+        const branchToDelete = payload.params.branch;
+        try {
+          console.log(`[git.worktree.remove] Deleting branch '${branchToDelete}'...`);
+          const deleted = await deleteBranch(repoPath, branchToDelete);
+          if (deleted) {
+            console.log(`[git.worktree.remove] Branch '${branchToDelete}' deleted`);
+          } else {
+            console.log(
+              `[git.worktree.remove] Branch '${branchToDelete}' not found (already deleted)`
+            );
+          }
+        } catch (branchError) {
+          // Log but don't fail the overall operation
+          console.warn(
+            `[git.worktree.remove] Failed to delete branch '${branchToDelete}':`,
+            branchError instanceof Error ? branchError.message : String(branchError)
+          );
+        }
+      }
     } else {
       console.log(
         '[git.worktree.remove] Worktree does not exist on filesystem, skipping git removal'

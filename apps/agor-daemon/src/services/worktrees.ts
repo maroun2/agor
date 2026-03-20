@@ -324,6 +324,9 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
                 worktreeId: worktree.worktree_id,
                 worktreePath: worktree.path,
                 deleteDbRecord: false, // Already deleted above
+                // Clean up the branch if it was created by Agor
+                branch: worktree.ref,
+                deleteBranch: worktree.new_branch,
               },
             },
             {
@@ -434,6 +437,9 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
                 worktreeId: worktree.worktree_id,
                 worktreePath: worktree.path,
                 deleteDbRecord: false, // Daemon handles DB deletion separately
+                // Clean up the branch if it was created by Agor
+                branch: worktree.ref,
+                deleteBranch: worktree.new_branch,
               },
             },
             {
