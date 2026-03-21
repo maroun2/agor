@@ -136,6 +136,14 @@ export class CodexPromptService {
     // Store API key from base-executor (already resolved with proper precedence)
     this.apiKey = apiKey || '';
     this.lastApiKey = this.apiKey;
+
+    if (!this.apiKey) {
+      console.warn(
+        '⚠️  [Codex] No OPENAI_API_KEY provided — Codex SDK requests will fail with 401. ' +
+          'Please configure your API key in Settings > API Keys.'
+      );
+    }
+
     // Initialize Codex SDK with resolved API key
     this.codex = new Codex.Codex({
       apiKey: this.apiKey,
@@ -199,8 +207,23 @@ export class CodexPromptService {
 
     // Create per-session CODEX_HOME (no race conditions!)
     // Use mode 0o700 (rwx------) to prevent other users from reading session metadata
-    const sessionCodexHome = path.join(os.tmpdir(), `agor-codex-${sessionId}`);
-    await fs.mkdir(sessionCodexHome, { recursive: true, mode: 0o700 });
+    //
+    // NOTE: We try os.tmpdir() first, but fall back to ~/.agor/tmp if /tmp is unavailable
+    // (e.g., in sandboxed executor environments or containers without /tmp mounted)
+    const tmpBase = os.tmpdir();
+    const sessionDirName = `agor-codex-${sessionId}`;
+    let sessionCodexHome = path.join(tmpBase, sessionDirName);
+
+    try {
+      await fs.mkdir(sessionCodexHome, { recursive: true, mode: 0o700 });
+    } catch (mkdirError) {
+      const fallbackBase = path.join(os.homedir(), '.agor', 'tmp');
+      console.warn(
+        `⚠️  [Codex] Failed to create CODEX_HOME in ${tmpBase} (${(mkdirError as Error).message}), falling back to ${fallbackBase}`
+      );
+      sessionCodexHome = path.join(fallbackBase, sessionDirName);
+      await fs.mkdir(sessionCodexHome, { recursive: true, mode: 0o700 });
+    }
 
     // Write session context to AGENTS.md
     // Use mode 0o600 (rw-------) to restrict file access
@@ -897,12 +920,38 @@ export class CodexPromptService {
           }
 
           case 'turn.failed': {
-            console.error('❌ Codex turn failed:', event.error);
-            // Stringify error object for better user-facing error messages
+            // Classify error for better user-facing messages
             const errorMessage =
               typeof event.error === 'string' ? event.error : JSON.stringify(event.error, null, 2);
+
+            // Detect 401/auth errors and provide actionable guidance
+            if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
+              const isEmptyKey = errorMessage.includes('Missing bearer');
+              const guidance = isEmptyKey
+                ? 'No OPENAI_API_KEY is configured. Please add your API key in Settings > API Keys.'
+                : 'Your OPENAI_API_KEY may be invalid or expired. Please check Settings > API Keys.';
+              console.error(
+                `❌ [Codex] Authentication failed for session ${sessionId.substring(0, 8)}: ${guidance}`
+              );
+              throw new Error(`Codex authentication failed: ${guidance}`);
+            }
+
+            // Log full error details for non-auth failures
+            console.error(
+              `❌ [Codex] Turn failed for session ${sessionId.substring(0, 8)}:`,
+              errorMessage
+            );
             throw new Error(`Codex execution failed: ${errorMessage}`);
           }
+
+          case 'error':
+            // SDK retry errors (e.g., 401 retries before turn.failed)
+            // Log once at warn level instead of silently ignoring
+            console.warn(
+              `⚠️  [Codex] SDK error event for session ${sessionId.substring(0, 8)} (event ${eventCount}):`,
+              (event as { error?: unknown }).error || 'unknown'
+            );
+            break;
 
           default:
             // Ignore other event types silently
@@ -925,7 +974,8 @@ export class CodexPromptService {
         return;
       }
 
-      console.error('❌ Codex streaming error:', error);
+      // Don't log here — error will be logged by the caller (base-executor)
+      // to avoid duplicate error output in daemon logs
       throw error;
     }
   }
@@ -1014,15 +1064,20 @@ export class CodexPromptService {
    * Removes per-session CODEX_HOME directory with AGENTS.md and config.toml
    */
   async closeSession(sessionId: SessionID): Promise<void> {
-    // Clean up per-session CODEX_HOME directory
-    const sessionCodexHome = path.join(os.tmpdir(), `agor-codex-${sessionId}`);
-    try {
-      await fs.rm(sessionCodexHome, { recursive: true, force: true });
-      console.log(`🗑️  [Codex] Removed per-session CODEX_HOME for session ${sessionId}`);
-    } catch (error) {
-      // Directory may not exist if session never ran - that's ok
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.warn(`⚠️  Failed to remove per-session CODEX_HOME:`, error);
+    // Clean up per-session CODEX_HOME directory from both possible locations
+    const sessionDirName = `agor-codex-${sessionId}`;
+    const possiblePaths = [
+      path.join(os.tmpdir(), sessionDirName),
+      path.join(os.homedir(), '.agor', 'tmp', sessionDirName),
+    ];
+
+    for (const sessionCodexHome of possiblePaths) {
+      try {
+        await fs.rm(sessionCodexHome, { recursive: true, force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.warn(`⚠️  Failed to remove CODEX_HOME at ${sessionCodexHome}:`, error);
+        }
       }
     }
 
