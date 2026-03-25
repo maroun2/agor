@@ -43,3 +43,8 @@ yarn-error.log*
 # Agor specific
 .agor/
 apps/agor-desktop/out/
+
+# iOS build artifacts
+CoreSimulator/
+apps/agor-ios/.build/
+
