@@ -32,6 +32,7 @@ This directory contains modular knowledge files that document Agor's concepts, a
 - **[permissions.md](concepts/permissions.md)** - Permission system, task-centric approval, audit trails
 - **[agor-mcp-server.md](concepts/agor-mcp-server.md)** - Built-in MCP endpoint that gives agents self-awareness of sessions, boards, and worktrees
 - **[api-docs.md](concepts/api-docs.md)** - Auto-generated Swagger/OpenAPI docs for every Feathers service
+- **[api-reference.md](concepts/api-reference.md)** - Complete API reference: all endpoints, WebSocket events, data models, enums, RBAC, errors
 - **[conversation-autocomplete.md](concepts/conversation-autocomplete.md)** - `@` autocomplete for files and users inside prompt inputs
 - **[database-migrations.md](concepts/database-migrations.md)** - Drizzle migration workflow plus `agor db status/migrate`
 - **[environment-logs.md](concepts/environment-logs.md)** - Worktree environment controls, log viewer, and MCP hooks
