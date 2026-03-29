@@ -91,6 +91,7 @@ import type {
   Id,
   InputRequestContent,
   MCPServer,
+  MCPServerID,
   Message,
   MessageSource,
   Paginated,
@@ -2657,6 +2658,8 @@ async function main() {
   // Register session-mcp-servers as a top-level service for WebSocket events
   // This is needed for real-time updates when MCP servers are added/removed from sessions
   const sessionMCPServersService = createSessionMCPServersService(db);
+  // Cast to any: this service has a non-standard setServers method not in FeathersJS's service interface
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app.use('/session-mcp-servers', {
     async find(params?: {
       query?: { session_id?: string; mcp_server_id?: string; enabled?: boolean };
@@ -2692,7 +2695,17 @@ async function main() {
         added_at: new Date(row.added_at),
       }));
     },
-  });
+    async setServers(sessionId: SessionID, serverIds: MCPServerID[]) {
+      await sessionMCPServersService.setServers(sessionId, serverIds);
+      // Emit created events for real-time UI updates
+      for (const serverId of serverIds) {
+        app.service('session-mcp-servers').emit('created', {
+          session_id: sessionId,
+          mcp_server_id: serverId,
+        });
+      }
+    },
+  } as any);
 
   // Register users service (for authentication)
   const usersService = createUsersService(db);

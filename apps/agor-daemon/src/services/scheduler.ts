@@ -25,12 +25,13 @@
 
 import type { Database } from '@agor/core/db';
 import { SessionRepository, UsersRepository, WorktreeRepository } from '@agor/core/db';
-import type { PermissionMode, Session, User, Worktree } from '@agor/core/types';
+import type { MCPServerID, PermissionMode, Session, User, Worktree } from '@agor/core/types';
 import { SessionStatus } from '@agor/core/types';
 import type { UnixUserMode } from '@agor/core/unix';
 import { getNextRunTime, getPrevRunTime } from '@agor/core/utils/cron';
 import Handlebars from 'handlebars';
 import type { Application } from '../declarations';
+import type { SessionMCPServersService } from './session-mcp-servers';
 
 export interface SchedulerConfig {
   /** Tick interval in milliseconds (default: 30000 = 30s) */
@@ -363,6 +364,12 @@ export class SchedulerService {
       // AND pass user: creator so the executor's session token is generated for the correct user.
       // Without the user, the token defaults to 'anonymous' which doesn't exist in the database,
       // causing the executor to fail with "User not found: anonymous" error.
+      // Attach MCP servers BEFORE triggering prompt (executor reads them at launch)
+      if (schedule.mcp_server_ids?.length) {
+        const sessionMCPService = this.app.service('session-mcp-servers') as unknown as SessionMCPServersService;
+        await sessionMCPService.setServers(createdSession.session_id, schedule.mcp_server_ids as MCPServerID[]);
+      }
+
       const promptService = this.app.service('/sessions/:id/prompt');
       await promptService.create(
         {
@@ -376,8 +383,6 @@ export class SchedulerService {
           user: creator, // Pass creator user for session token generation
         } as import('@agor/core/types').AuthenticatedParams & { route: { id: string } }
       );
-
-      // TODO: Attach MCP servers if specified in schedule.mcp_server_ids
 
       // 7. Update schedule metadata
       await this.updateScheduleMetadata(worktree, scheduledRunAt, now);

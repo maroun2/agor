@@ -8,9 +8,10 @@
 import { PAGINATION } from '@agor/core/config';
 import { type Database, SessionRepository, type SessionWithLastMessage } from '@agor/core/db';
 import type { Application } from '@agor/core/feathers';
-import type { Paginated, QueryParams, Session, TaskID } from '@agor/core/types';
+import type { MCPServerID, Paginated, QueryParams, Session, TaskID } from '@agor/core/types';
 import { SessionStatus } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
+import type { SessionMCPServersService } from './session-mcp-servers';
 
 /**
  * Session service params
@@ -241,7 +242,7 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
       };
     }
 
-    // TODO: Handle MCP server attachment from data.mcpServerIds via session_mcp_servers junction table
+    const mcpServerIds = data.mcpServerIds;
 
     // Build callback configuration - only store explicit overrides
     // Leave fields undefined if not specified so parent's config applies
@@ -284,13 +285,18 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
         model_config: modelConfig,
         callback_config: callbackConfig,
         // Don't copy sdk_session_id - spawn will get its own via forkSession:true
-        // TODO: Handle MCP server attachment via session_mcp_servers junction table
       },
       params
     );
 
     // Cast spawnedSession to Session to handle return type (create returns Session | Session[])
     const session = spawnedSession as Session;
+
+    // Attach MCP servers if specified in spawn config
+    if (mcpServerIds?.length) {
+      const sessionMCPService = this.app?.service('session-mcp-servers') as unknown as SessionMCPServersService;
+      await sessionMCPService.setServers(session.session_id, mcpServerIds as MCPServerID[]);
+    }
 
     // Update parent's children list
     const parentChildren = parent.genealogy?.children || [];

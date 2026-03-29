@@ -2,6 +2,7 @@ import type { AgorClient } from '@agor/core/api';
 import type { Repo, Session, SpawnConfig, User, Worktree } from '@agor/core/types';
 import { getAssistantConfig, isAssistant } from '@agor/core/types';
 import {
+  ApiOutlined,
   BranchesOutlined,
   ClockCircleOutlined,
   CodeOutlined,
@@ -32,6 +33,7 @@ import {
 import { AggregationColor } from 'antd/es/color-picker/color';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useConnectionDisabled } from '../../contexts/ConnectionContext';
+import { useAppData } from '../../contexts/AppDataContext';
 import { getSessionDisplayTitle, getSessionTitleStyles } from '../../utils/sessionTitle';
 import { ensureColorVisible, isDarkTheme } from '../../utils/theme';
 import { ArchiveDeleteWorktreeModal } from '../ArchiveDeleteWorktreeModal';
@@ -110,6 +112,7 @@ const WorktreeCardComponent = ({
 }: WorktreeCardProps) => {
   const { token } = theme.useToken();
   const connectionDisabled = useConnectionDisabled();
+  const { mcpServerById, sessionMcpServerIds } = useAppData();
 
   // Fork/Spawn modal state
   const [forkSpawnModal, setForkSpawnModal] = useState<{
@@ -454,7 +457,10 @@ const WorktreeCardComponent = ({
   // Scheduled runs content (flat list, no genealogy tree needed)
   const scheduledRunsContent = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {scheduledSessions.map((session) => (
+      {scheduledSessions.map((session) => {
+        const mcpIds = sessionMcpServerIds.get(session.session_id) || [];
+        const mcpServers = mcpIds.map((id) => mcpServerById.get(id)).filter(Boolean);
+        return (
         <div
           key={session.session_id}
           style={{
@@ -470,16 +476,40 @@ const WorktreeCardComponent = ({
         >
           <Space size={4} align="center" style={{ flex: 1, minWidth: 0 }}>
             <ToolIcon tool={session.agentic_tool} size={20} />
-            <Typography.Text
-              style={{
-                fontSize: 12,
-                flex: 1,
-                color: token.colorTextSecondary,
-                ...getSessionTitleStyles(2),
-              }}
-            >
-              {getSessionDisplayTitle(session, { includeAgentFallback: true })}
-            </Typography.Text>
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <Typography.Text
+                style={{
+                  fontSize: 12,
+                  color: token.colorTextSecondary,
+                  ...getSessionTitleStyles(2),
+                }}
+              >
+                {getSessionDisplayTitle(session, { includeAgentFallback: true })}
+              </Typography.Text>
+              {mcpServers.length > 0 && (
+                <Space size={4} wrap style={{ alignSelf: 'flex-start' }}>
+                  {mcpServers.map((server) => (
+                    <span
+                      key={server?.mcp_server_id}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        fontSize: 11,
+                        color: token.colorPrimary,
+                        border: `1px solid ${token.colorPrimaryBorder}`,
+                        borderRadius: 4,
+                        padding: '0 6px',
+                        lineHeight: '18px',
+                      }}
+                    >
+                      <ApiOutlined style={{ fontSize: 10 }} />
+                      {server?.display_name || server?.name}
+                    </span>
+                  ))}
+                </Space>
+              )}
+            </div>
           </Space>
 
           {/* Status indicator */}
@@ -495,7 +525,8 @@ const WorktreeCardComponent = ({
             <TaskStatusIcon status={session.status} size={16} />
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 
