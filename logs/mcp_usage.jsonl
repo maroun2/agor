@@ -1,0 +1,1 @@
+{"timestamp": "2026-03-28T21:05:40.127042+00:00", "tool_name": "ha_get_overview", "parameters": {"detail_level": "minimal", "max_entities_per_domain": null, "include_state": null, "include_entity_id": null}, "execution_time_ms": 642.648458480835, "success": true, "error_message": null, "response_size_bytes": 9445, "user_context": null}
