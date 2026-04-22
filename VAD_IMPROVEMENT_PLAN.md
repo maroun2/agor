@@ -10,7 +10,7 @@ Current implementation: energy-based EMA threshold in `VoiceActivityDetector.swi
 | Aspect | Current | Industry standard | Gap |
 |---|---|---|---|
 | VAD method | Energy-based EMA | ML (Silero, WebRTC) | Large |
-| Silence duration | 3.0s | 300–800ms | Very long |
+| Silence duration | 3.0s | 300–800ms | Intentionally longer for UX |
 | Confirmation window | ~80ms (4 frames) | 250ms | Too short → false triggers |
 | Frequency filtering | Full spectrum RMS | 300–1500 Hz bandpass | Picking up keyboard/HVAC noise |
 | TTS echo cancellation | State-gating only | WebRTC AEC / iOS voice processing | Vulnerable to speaker feedback |
@@ -22,17 +22,7 @@ Current implementation: energy-based EMA threshold in `VoiceActivityDetector.swi
 
 ## Tier 1: Quick Wins (no new deps, ~1–2 hours)
 
-### 1. Silence duration: 3.0s → 1.2s
-**File**: `VoiceActivityDetector.swift`
-
-Industry consensus: 300–800ms. 3s makes conversation feel sluggish.
-1.2s is a good middle ground — long enough for thinking pauses, short enough to feel responsive.
-
-```swift
-private let silenceDuration: TimeInterval = 1.2
-```
-
-### 2. Confirmation frames: 4 → 12 (~250ms)
+### 1. Confirmation frames: 4 → 12 (~250ms)
 **File**: `VoiceActivityDetector.swift`
 
 Industry standard minimum speech duration is 250ms. At 47fps, that's ~12 frames.
