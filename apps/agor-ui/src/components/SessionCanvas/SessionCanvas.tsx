@@ -56,6 +56,11 @@ import 'reactflow/dist/style.css';
 import './SessionCanvas.css';
 import { mapToArray } from '@/utils/mapHelpers';
 import { DEFAULT_BACKGROUNDS } from '../../constants/ui';
+import {
+  useCollapsedZones,
+  useFavorites,
+  useWorktreeExpanded,
+} from '../../hooks/useCanvasPrefs';
 import { useCursorTracking } from '../../hooks/useCursorTracking';
 import { usePresence } from '../../hooks/usePresence';
 import type { AgenticToolOption } from '../../types';
@@ -205,6 +210,10 @@ interface WorktreeNodeData {
   zoneColor?: string;
   selectedSessionId?: string | null;
   client: AgorClient | null;
+  isFavorite?: boolean;
+  onToggleFavorite?: (worktreeId: string) => void;
+  isExpanded?: boolean;
+  onExpandedChange?: (worktreeId: string, expanded: boolean) => void;
 }
 
 // Custom node component that renders CardNode (memoized)
@@ -245,6 +254,14 @@ const WorktreeNode = React.memo(({ data }: { data: WorktreeNodeData }) => {
         client={data.client}
         zoneColor={data.zoneColor}
         defaultExpanded={!data.compact}
+        isFavorite={data.isFavorite}
+        onToggleFavorite={data.onToggleFavorite}
+        isExpanded={data.isExpanded}
+        onExpandedChange={
+          data.onExpandedChange
+            ? (expanded) => data.onExpandedChange!(data.worktree.worktree_id, expanded)
+            : undefined
+        }
       />
     </div>
   );
@@ -308,6 +325,11 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
     const isDarkMode = isDarkTheme(token);
     const defaultBackground = DEFAULT_BACKGROUNDS[isDarkMode ? 'dark' : 'light'];
     const canvasBackground = board?.background_color ?? defaultBackground;
+
+    // Persistent canvas prefs (favorites, expanded/collapsed state, collapsed zones)
+    const { isFavorite, toggleFavorite } = useFavorites(currentUserId);
+    const { getWorktreeExpanded, setWorktreeExpanded } = useWorktreeExpanded(currentUserId);
+    const { isZoneCollapsed, toggleZoneCollapsed } = useCollapsedZones(currentUserId);
 
     // Sanitize and scope custom CSS for this board (enables @keyframes, animations, etc.)
     const boardCssClass = board?.board_id ? `board-css-${board.board_id.slice(0, 8)}` : '';
@@ -635,6 +657,12 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
             zoneName,
             zoneColor,
             client,
+            isFavorite: isFavorite(worktree.worktree_id),
+            onToggleFavorite: toggleFavorite,
+            isExpanded: zoneId && isZoneCollapsed(zoneId)
+              ? false
+              : getWorktreeExpanded(worktree.worktree_id),
+            onExpandedChange: setWorktreeExpanded,
           },
         });
       });
@@ -665,6 +693,11 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
       zoneLabels,
       userById,
       client,
+      isFavorite,
+      toggleFavorite,
+      isZoneCollapsed,
+      getWorktreeExpanded,
+      setWorktreeExpanded,
     ]);
 
     // Handler to open card modal
@@ -1132,7 +1165,15 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
           .filter((n) => n.type === 'zone' && !deletedObjectsRef.current.has(n.id))
           .map((newZone) => {
             const existingZone = currentNodes.find((n) => n.id === newZone.id);
-            return { ...newZone, selected: existingZone?.selected };
+            return {
+              ...newZone,
+              selected: existingZone?.selected,
+              data: {
+                ...newZone.data,
+                isCollapsed: isZoneCollapsed(newZone.id),
+                onCollapseToggle: toggleZoneCollapsed,
+              },
+            };
           });
 
         const markdown = boardObjectNodes
@@ -1155,7 +1196,7 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
 
         return applyZOrder(zones, markdown, worktrees, cards, comments, cursors, apps);
       });
-    }, [getBoardObjectNodes, setNodes, applyZOrder, partitionNodesByType]);
+    }, [getBoardObjectNodes, setNodes, applyZOrder, partitionNodesByType, isZoneCollapsed, toggleZoneCollapsed]);
 
     // Sync CURSOR nodes separately - optimized to avoid re-partitioning all nodes
     useEffect(() => {

@@ -3,7 +3,14 @@
  */
 
 import type { BoardComment, BoardObject, User } from '@agor-live/client';
-import { DeleteOutlined, LockOutlined, SettingOutlined, UnlockOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  DownOutlined,
+  LockOutlined,
+  RightOutlined,
+  SettingOutlined,
+  UnlockOutlined,
+} from '@ant-design/icons';
 import { ColorPicker, theme } from 'antd';
 import type { Color } from 'antd/es/color-picker';
 import { AggregationColor } from 'antd/es/color-picker/color';
@@ -47,6 +54,8 @@ interface ZoneNodeData {
   y: number;
   trigger?: BoardObject extends { type: 'zone'; trigger?: infer T } ? T : never;
   sessionCount?: number;
+  isCollapsed?: boolean;
+  onCollapseToggle?: (zoneId: string) => void;
   onUpdate?: (objectId: string, objectData: BoardObject) => void;
   onDelete?: (objectId: string, deleteAssociatedSessions: boolean) => void;
 }
@@ -609,6 +618,9 @@ const ZoneNodeComponent = ({ data, selected }: { data: ZoneNodeData; selected?: 
             width: '100%',
             // Reserve space for scaled label (base font size / zoom)
             minHeight: `${token.fontSize * scale}px`,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: `${4 * scale}px`,
           }}
           onDoubleClick={() => setIsEditingLabel(true)}
         >
@@ -647,14 +659,56 @@ const ZoneNodeComponent = ({ data, selected }: { data: ZoneNodeData; selected?: 
                 transform: `scale(${scale})`,
                 transformOrigin: 'top left',
                 // Constrain to zone width accounting for padding and scale
-                maxWidth: `${(data.width - token.padding * 2) / scale}px`,
+                maxWidth: `${(data.width - token.padding * 2 - 24 * scale) / scale}px`,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
+                flex: 1,
               }}
             >
               {label}
             </h3>
+          )}
+          {data.onCollapseToggle && (
+            <button
+              type="button"
+              className="nodrag nopan"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onPointerUp={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                data.onCollapseToggle?.(data.objectId);
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              style={{
+                width: `${20 * scale}px`,
+                height: `${20 * scale}px`,
+                borderRadius: '3px',
+                backgroundColor: 'transparent',
+                border: `1px solid ${textColor}40`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                userSelect: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                color: textColor,
+                flexShrink: 0,
+              }}
+              title={data.isCollapsed ? 'Expand zone sessions' : 'Collapse zone sessions'}
+            >
+              {data.isCollapsed ? (
+                <RightOutlined style={{ fontSize: `${10 * scale}px` }} />
+              ) : (
+                <DownOutlined style={{ fontSize: `${10 * scale}px` }} />
+              )}
+            </button>
           )}
         </div>
         {data.status && (

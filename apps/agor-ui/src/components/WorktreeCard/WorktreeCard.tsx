@@ -27,6 +27,8 @@ import {
   PushpinFilled,
   RobotOutlined,
   SettingOutlined,
+  StarFilled,
+  StarOutlined,
   SubnodeOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
@@ -163,6 +165,10 @@ interface WorktreeCardProps {
   zoneName?: string;
   zoneColor?: string;
   defaultExpanded?: boolean;
+  isFavorite?: boolean;
+  onToggleFavorite?: (worktreeId: string) => void;
+  isExpanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   inPopover?: boolean; // NEW: Enable popover-optimized mode (hides board-specific controls)
   client: AgorClient | null;
 }
@@ -192,6 +198,10 @@ const WorktreeCardComponent = ({
   zoneName,
   zoneColor,
   defaultExpanded = true,
+  isFavorite = false,
+  onToggleFavorite,
+  isExpanded,
+  onExpandedChange,
   inPopover = false,
   client,
 }: WorktreeCardProps) => {
@@ -823,6 +833,26 @@ const WorktreeCardComponent = ({
               />
             </Tooltip>
           )}
+          {!inPopover && onToggleFavorite && (
+            <Tooltip title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}>
+              <Button
+                type="text"
+                size="small"
+                icon={
+                  isFavorite ? (
+                    <StarFilled style={{ color: token.colorWarning }} />
+                  ) : (
+                    <StarOutlined />
+                  )
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleFavorite(worktree.worktree_id);
+                }}
+                className="nodrag"
+              />
+            </Tooltip>
+          )}
           {!inPopover && (
             <Button
               type="text"
@@ -1003,7 +1033,14 @@ const WorktreeCardComponent = ({
             {/* Manual Sessions */}
             {manualSessions.length > 0 && (
               <Collapse
-                defaultActiveKey={defaultExpanded ? ['sessions'] : []}
+                {...(isExpanded !== undefined
+                  ? {
+                      activeKey: isExpanded ? ['sessions'] : [],
+                      onChange: (keys) => onExpandedChange?.(keys.includes('sessions')),
+                    }
+                  : {
+                      defaultActiveKey: defaultExpanded ? ['sessions'] : [],
+                    })}
                 items={[
                   {
                     key: 'sessions',

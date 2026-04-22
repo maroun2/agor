@@ -8,6 +8,7 @@ export type FeathersEventHandler = (...args: any[]) => void;
 
 export * from './useAgorClient';
 export * from './useAgorData';
+export * from './useCanvasPrefs';
 export * from './useAuth';
 export * from './useAuthConfig';
 export * from './useBoardActions';
