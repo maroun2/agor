@@ -80,10 +80,6 @@ export function useAgorData(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Track if we've done initial fetch - prevents refetch on reconnection
-  // WebSocket events keep data synchronized in real-time
-  const [hasInitiallyFetched, setHasInitiallyFetched] = useState(false);
-
   // Fetch all data
   const fetchData = useCallback(async () => {
     if (!client || !enabled) {
@@ -261,10 +257,9 @@ export function useAgorData(
       return;
     }
 
-    // Initial fetch (only once - WebSocket events keep us synced after that)
-    if (!hasInitiallyFetched) {
-      fetchData().then(() => setHasInitiallyFetched(true));
-    }
+    // Full fetch on every (re)connect — replaces maps entirely so archived sessions
+    // can never linger from a previous connection's stale state.
+    fetchData();
 
     // Subscribe to session events
     const sessionsService = client.service('sessions');
@@ -291,7 +286,7 @@ export function useAgorData(
       });
     };
     const handleSessionPatched = (session: Session) => {
-      const isArchived = session.archived === true;
+      const isArchived = !!session.archived;
       // Track old worktree_id for migration detection
       let oldWorktreeId: string | null = null;
 
@@ -926,7 +921,7 @@ export function useAgorData(
       artifactsService.removeListener('updated', handleArtifactPatched);
       artifactsService.removeListener('removed', handleArtifactRemoved);
     };
-  }, [client, enabled, fetchData, hasInitiallyFetched]);
+  }, [client, enabled, fetchData]);
 
   return {
     sessionById,
