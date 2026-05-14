@@ -31,10 +31,7 @@ export function useFavorites(userId: string | undefined) {
     [setFavorites]
   );
 
-  const isFavorite = useCallback(
-    (worktreeId: string) => !!favorites[worktreeId],
-    [favorites]
-  );
+  const isFavorite = useCallback((worktreeId: string) => !!favorites[worktreeId], [favorites]);
 
   return { isFavorite, toggleFavorite };
 }

@@ -56,11 +56,7 @@ import 'reactflow/dist/style.css';
 import './SessionCanvas.css';
 import { mapToArray } from '@/utils/mapHelpers';
 import { DEFAULT_BACKGROUNDS } from '../../constants/ui';
-import {
-  useCollapsedZones,
-  useFavorites,
-  useWorktreeExpanded,
-} from '../../hooks/useCanvasPrefs';
+import { useCollapsedZones, useFavorites, useWorktreeExpanded } from '../../hooks/useCanvasPrefs';
 import { useCursorTracking } from '../../hooks/useCursorTracking';
 import { usePresence } from '../../hooks/usePresence';
 import type { AgenticToolOption } from '../../types';
@@ -659,9 +655,8 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
             client,
             isFavorite: isFavorite(worktree.worktree_id),
             onToggleFavorite: toggleFavorite,
-            isExpanded: zoneId && isZoneCollapsed(zoneId)
-              ? false
-              : getWorktreeExpanded(worktree.worktree_id),
+            isExpanded:
+              zoneId && isZoneCollapsed(zoneId) ? false : getWorktreeExpanded(worktree.worktree_id),
             onExpandedChange: setWorktreeExpanded,
           },
         });
@@ -1196,7 +1191,14 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
 
         return applyZOrder(zones, markdown, worktrees, cards, comments, cursors, apps);
       });
-    }, [getBoardObjectNodes, setNodes, applyZOrder, partitionNodesByType, isZoneCollapsed, toggleZoneCollapsed]);
+    }, [
+      getBoardObjectNodes,
+      setNodes,
+      applyZOrder,
+      partitionNodesByType,
+      isZoneCollapsed,
+      toggleZoneCollapsed,
+    ]);
 
     // Sync CURSOR nodes separately - optimized to avoid re-partitioning all nodes
     useEffect(() => {
