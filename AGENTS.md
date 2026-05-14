@@ -580,10 +580,3 @@ You are currently running within **Agor** (https://agor.live), a multiplayer can
 When you see this ID referenced in prompts or tool calls, it refers to THIS session you're currently in.
 
 For more information about Agor, visit https://agor.live
-
-## Worktree Notes
-
-- Updated the iOS sidebar/navigation only.
-- Moved Settings out of the footer and into a compact inline gear button beside the server tab bar.
-- Made favorites sort ahead of non-favorites in the sidebar session lists while keeping the remaining order stable by recency.
-- Validation: `git diff --check` passed. `xcodebuild` is not available in this environment, so I could not run a native iOS build here.
