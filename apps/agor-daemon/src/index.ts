@@ -5290,6 +5290,83 @@ async function main() {
     requireAuth
   );
 
+  // HTTP REST fallback for queue endpoint (FeathersJS nested-path REST routing bug)
+  // @feathersjs/express does not route HTTP to services registered at paths with
+  // multiple segments after a dynamic param (e.g. /sessions/:id/messages/queue).
+  // Socket.IO works fine. These express routes complement the FeathersJS registration.
+  const expressApp = app as unknown as {
+    get: (...args: unknown[]) => void;
+    post: (...args: unknown[]) => void;
+  };
+  const sendQueueRouteError = (
+    res: { status: (code: number) => { json: (body: { error: string }) => unknown } },
+    err: unknown
+  ) => {
+    const maybeError = err as { code?: unknown; status?: unknown; message?: unknown };
+    const status =
+      typeof maybeError.code === 'number'
+        ? maybeError.code
+        : typeof maybeError.status === 'number'
+          ? maybeError.status
+          : 500;
+    const message = typeof maybeError.message === 'string' ? maybeError.message : 'Request failed';
+
+    return res.status(status).json({ error: message });
+  };
+
+  expressApp.get(
+    '/sessions/:id/messages/queue',
+    uploadAuthMiddleware,
+    // biome-ignore lint/suspicious/noExplicitAny: Express 5 type compatibility
+    async (req: any, res: any) => {
+      try {
+        const params = req.feathers as RouteParams;
+        ensureMinimumRole(params, 'member', 'view queue');
+
+        const sessionId = req.params.id;
+        const messageRepo = new MessagesRepository(db);
+        const queued = await messageRepo.findQueued(sessionId as SessionID);
+
+        return res.json({ total: queued.length, data: queued });
+      } catch (err) {
+        return sendQueueRouteError(res, err);
+      }
+    }
+  );
+
+  expressApp.post(
+    '/sessions/:id/messages/queue',
+    uploadAuthMiddleware,
+    // biome-ignore lint/suspicious/noExplicitAny: Express 5 type compatibility
+    async (req: any, res: any) => {
+      try {
+        const params = req.feathers as RouteParams;
+        ensureMinimumRole(params, 'member', 'queue messages');
+
+        const sessionId = req.params.id;
+        const { prompt } = req.body;
+        if (!prompt) return res.status(400).json({ error: 'Prompt required' });
+
+        await sessionsService.get(sessionId, params);
+
+        const messageRepo = new MessagesRepository(db);
+        const queuedMessage = await messageRepo.createQueued(sessionId as SessionID, prompt, {
+          queued_by_user_id: params.user?.user_id,
+        });
+
+        console.log(
+          `📬 [Queue REST] Queued for ${sessionId.substring(0, 8)} at position ${queuedMessage.queue_position}`
+        );
+
+        app.service('messages').emit('queued', queuedMessage);
+
+        return res.json({ success: true, message: queuedMessage });
+      } catch (err) {
+        return sendQueueRouteError(res, err);
+      }
+    }
+  );
+
   /**
    * Process the next queued message for a session
    * Called automatically after task completion when session becomes idle
