@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import type { Thread, ThreadItem } from '@agor/core/sdk';
 import { Codex } from '@agor/core/sdk';
 import { renderAgorSystemPrompt } from '@agor/core/templates/session-context';
+import { mapToCodexPermissionConfig } from '@agor/core/utils/permission-mode-mapper';
 import { type JsonMap, parse as parseToml, stringify as stringifyToml } from '@iarna/toml';
 import { getDaemonUrl } from '../../config.js';
 import type {
@@ -583,8 +584,15 @@ export class CodexPromptService {
     // 2. approval_policy (via config.toml) - controls WHETHER agent asks before executing
     // 3. network_access (via config.toml) - controls network connectivity
 
-    // Read from session.permission_config.codex (dual config), fallback to defaults
-    const codexConfig = session.permission_config?.codex;
+    // Resolve Codex permissions with explicit precedence:
+    // 1. session.permission_config.codex (explicit Codex override)
+    // 2. session.permission_config.mode (unified mode from scheduler/programmatic sessions)
+    // 3. hardcoded safe defaults
+    const codexConfig =
+      session.permission_config?.codex ||
+      (session.permission_config?.mode
+        ? mapToCodexPermissionConfig(session.permission_config.mode)
+        : undefined);
     const sandboxMode = codexConfig?.sandboxMode || 'workspace-write';
     const approvalPolicy = codexConfig?.approvalPolicy || 'on-request';
     const networkAccess = codexConfig?.networkAccess ?? false; // Default: disabled

@@ -10,8 +10,8 @@ import { CodexPromptService } from './prompt-service.js';
 // Track how many Codex instances were created (module-level state)
 let mockInstanceCount = 0;
 
-// Mock @openai/codex-sdk to avoid spawning real processes
-vi.mock('@openai/codex-sdk', () => {
+// Mock @agor/core/sdk to avoid spawning real Codex SDK processes
+vi.mock('@agor/core/sdk', () => {
   class MockCodex {
     apiKey: string;
     instanceId: number;
@@ -39,7 +39,9 @@ vi.mock('@openai/codex-sdk', () => {
   }
 
   return {
-    Codex: MockCodex,
+    Codex: {
+      Codex: MockCodex,
+    },
   };
 });
 
@@ -47,9 +49,11 @@ vi.mock('@openai/codex-sdk', () => {
 const mockMessagesRepo = {} as any;
 const mockSessionsRepo = {
   findById: vi.fn(),
+  update: vi.fn(),
 } as any;
 const mockSessionMCPServerRepo = {
   listServers: vi.fn().mockResolvedValue([]),
+  listServersWithMetadata: vi.fn().mockResolvedValue([]),
 } as any;
 const mockWorktreesRepo = {
   findById: vi.fn(),
@@ -150,5 +154,95 @@ describe('CodexPromptService - SDK Instance Caching (issue #133)', () => {
     // Call with actual key - should create new instance
     serviceWithPrivate.refreshClient('new-key');
     expect(mockInstanceCount).toBe(countAfterInit + 1);
+  });
+});
+
+describe('CodexPromptService - Permission Config Resolution', () => {
+  beforeEach(() => {
+    mockInstanceCount = 0;
+    vi.clearAllMocks();
+
+    mockWorktreesRepo.findById.mockResolvedValue({
+      worktree_id: 'worktree-1',
+      path: '/tmp/agor-test-worktree',
+    });
+  });
+
+  async function runPrompt(service: CodexPromptService) {
+    for await (const _event of service.promptSessionStreaming(
+      'session-1' as any,
+      'test prompt',
+      'task-1' as any
+    )) {
+      // Consume stream so setup path runs.
+    }
+  }
+
+  function createService() {
+    const service = new CodexPromptService(
+      mockMessagesRepo,
+      mockSessionsRepo,
+      mockSessionMCPServerRepo,
+      mockWorktreesRepo,
+      undefined, // reposRepo
+      'test-api-key',
+      mockDb
+    );
+
+    vi.spyOn(service as any, 'ensureCodexSessionContext').mockResolvedValue('/tmp/mock-codex-home');
+    const ensureConfigSpy = vi.spyOn(service as any, 'ensureCodexConfig').mockResolvedValue(0);
+
+    return { service, ensureConfigSpy };
+  }
+
+  it('maps unified allow-all mode to Codex full access config when codex override is absent', async () => {
+    mockSessionsRepo.findById.mockResolvedValue({
+      session_id: 'session-1',
+      worktree_id: 'worktree-1',
+      permission_config: { mode: 'allow-all' },
+      mcp_token: 'mcp-token',
+      created_at: new Date('2026-05-22T00:00:00.000Z'),
+    });
+
+    const { service, ensureConfigSpy } = createService();
+
+    await runPrompt(service);
+
+    expect(ensureConfigSpy).toHaveBeenCalledWith(
+      'never',
+      true,
+      'session-1',
+      '/tmp/mock-codex-home',
+      'mcp-token'
+    );
+  });
+
+  it('prefers explicit Codex config over unified mode', async () => {
+    mockSessionsRepo.findById.mockResolvedValue({
+      session_id: 'session-1',
+      worktree_id: 'worktree-1',
+      permission_config: {
+        mode: 'allow-all',
+        codex: {
+          sandboxMode: 'read-only',
+          approvalPolicy: 'untrusted',
+          networkAccess: false,
+        },
+      },
+      mcp_token: 'mcp-token',
+      created_at: new Date('2026-05-22T00:00:00.000Z'),
+    });
+
+    const { service, ensureConfigSpy } = createService();
+
+    await runPrompt(service);
+
+    expect(ensureConfigSpy).toHaveBeenCalledWith(
+      'untrusted',
+      false,
+      'session-1',
+      '/tmp/mock-codex-home',
+      'mcp-token'
+    );
   });
 });

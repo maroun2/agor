@@ -13,7 +13,7 @@
  * See: context/explorations/mcp-session-management.md for full specification
  */
 
-import type { AgenticToolName, PermissionMode } from '../types';
+import type { AgenticToolName, CodexSandboxMode, PermissionMode } from '../types';
 
 /**
  * Maps a permission mode when spawning a child session of a different agent type.
@@ -123,18 +123,20 @@ export function mapPermissionMode(
 }
 
 /**
- * Converts a unified PermissionMode to Codex-specific dual configuration.
+ * Converts a unified PermissionMode to Codex-specific config.
  *
- * Codex uses a two-part permission system:
+ * Codex uses a three-part permission system:
  * - sandboxMode: Controls WHERE Codex can write (filesystem boundaries)
  * - approvalPolicy: Controls WHETHER Codex asks before executing
+ * - networkAccess: Controls whether Codex can access the network
  *
  * @param mode - The unified permission mode
- * @returns Codex-specific config { sandboxMode, approvalPolicy }
+ * @returns Codex-specific config { sandboxMode, approvalPolicy, networkAccess }
  */
 export function mapToCodexPermissionConfig(mode: PermissionMode): {
-  sandboxMode: 'read-only' | 'workspace-write';
+  sandboxMode: CodexSandboxMode;
   approvalPolicy: 'untrusted' | 'on-request' | 'on-failure' | 'never';
+  networkAccess: boolean;
 } {
   // First map to Codex-compatible mode
   const codexMode = mapPermissionMode(mode, 'codex');
@@ -144,27 +146,32 @@ export function mapToCodexPermissionConfig(mode: PermissionMode): {
       return {
         sandboxMode: 'read-only',
         approvalPolicy: 'untrusted', // Ask for everything
+        networkAccess: false,
       };
     case 'auto':
       return {
         sandboxMode: 'workspace-write',
         approvalPolicy: 'on-request', // Auto-approve safe ops, ask for dangerous
+        networkAccess: false,
       };
     case 'on-failure':
       return {
         sandboxMode: 'workspace-write',
         approvalPolicy: 'on-failure', // Ask only when tools fail
+        networkAccess: false,
       };
     case 'allow-all':
       return {
-        sandboxMode: 'workspace-write',
+        sandboxMode: 'danger-full-access',
         approvalPolicy: 'never', // Never ask
+        networkAccess: true,
       };
     default:
       // Fallback to safe default (ask for everything)
       return {
         sandboxMode: 'read-only',
         approvalPolicy: 'untrusted',
+        networkAccess: false,
       };
   }
 }
