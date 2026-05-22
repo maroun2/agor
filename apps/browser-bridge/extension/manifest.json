@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Agor Browser Bridge",
+  "version": "0.1.0",
+  "description": "Approve Agor browser actions and bridge Chrome to a remote MCP relay.",
+  "permissions": ["alarms", "activeTab", "scripting", "sidePanel", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "options_page": "options.html",
+  "action": { "default_title": "Agor Browser Bridge" }
+}

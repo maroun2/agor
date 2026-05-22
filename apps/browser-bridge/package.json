@@ -1,0 +1,19 @@
+{
+  "name": "@agor/browser-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agor Browser Bridge relay server and Chrome extension source",
+  "main": "./server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "node --check server.js && node --check extension/background.js && node --check extension/sidepanel.js && node --check extension/options.js",
+    "check": "pnpm build"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

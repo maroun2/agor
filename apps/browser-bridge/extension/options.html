@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="sidepanel.css"></head><body>
+<header><h1>AGOR BROWSER BRIDGE SETTINGS</h1></header>
+<section class="card">
+  <label>Server URL<br><input id="serverUrl" placeholder="wss://vps-domain/browser-bridge"></label><br><br>
+  <label>Auth token<br><input id="authToken" type="password" placeholder="paste token from VPS"></label><br><br>
+  <label><input id="autoConnect" type="checkbox"> Auto-connect on extension start</label>
+  <div class="actions"><button type="button" class="primary" id="save">Save</button></div>
+  <p id="status"></p>
+</section>
+<script src="options.js"></script>
+</body></html>
