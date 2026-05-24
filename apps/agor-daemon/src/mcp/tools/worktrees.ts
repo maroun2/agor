@@ -16,6 +16,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ReposServiceImpl, WorktreesServiceImpl } from '../../declarations.js';
 import type { WorktreeParams } from '../../services/worktrees.js';
+import { type ToolConfig, type ToolHandler, wrapRegisterTool } from '../register-tool-proxy.js';
 import {
   resolveBoardId,
   resolveMcpServerId,
@@ -30,16 +31,62 @@ import { assertValidVariant } from './_environment-helpers.js';
 const WORKTREE_NAME_PATTERN = /^[a-z0-9-]+$/;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
-export function registerWorktreeTools(server: McpServer, ctx: McpContext): void {
+/**
+ * Mirror every `agor_worktrees_*` tool registration as a sibling
+ * `agor_branches_*` registration. The new `agor_branches_*` name gets the
+ * original config + handler; the legacy `agor_worktrees_*` name gets a
+ * `[Deprecated alias of agor_branches_X]` description prefix and a
+ * handler that emits a `⚠️  [mcp][deprecation]` warning before delegating.
+ *
+ * Implements §7 of
+ * docs/internal/branch-vs-worktree-migration-analysis-2026-05-20.md:
+ * both names work for 1–2 minor versions; legacy emits per-call warnings;
+ * legacy is removed in a future release. The wrapper lives at the file
+ * boundary so the 8 individual tool definitions below stay declarative.
+ *
+ * @internal Exported only so the focused alias-wrapper tests in
+ *   `worktrees.test.ts` can exercise the (args, extra) forwarding contract
+ *   without monkey-patching `registerWorktreeTools`. Not part of the
+ *   public module API; outside callers should go through
+ *   `registerWorktreeTools` like every other domain.
+ */
+export function withBranchAliases(server: McpServer): McpServer {
+  return wrapRegisterTool(server, (register, name, config, handler) => {
+    if (!name.startsWith('agor_worktrees_')) {
+      return register(name, config, handler);
+    }
+    const branchName = name.replace('agor_worktrees_', 'agor_branches_');
+    // New name: clean handler + unchanged description.
+    register(branchName, config, handler);
+    // Legacy name: deprecation-prefixed description + per-call warning.
+    const deprecatedConfig: ToolConfig = {
+      ...config,
+      description:
+        `[Deprecated alias of ${branchName}] ${(config.description as string | undefined) ?? ''}`.trim(),
+    };
+    const deprecatedHandler: ToolHandler = (args, extra) => {
+      console.warn(
+        `⚠️  [mcp][deprecation] ${name} called; alias ${branchName} is available — ${name} will be removed in a future minor release`
+      );
+      return handler(args, extra);
+    };
+    return register(name, deprecatedConfig, deprecatedHandler);
+  });
+}
+
+export function registerWorktreeTools(rawServer: McpServer, ctx: McpContext): void {
+  // Tools registered through this server get an automatic `agor_branches_*`
+  // alias. See `withBranchAliases` for the rationale.
+  const server = withBranchAliases(rawServer);
   // Tool 1: agor_worktrees_get
   server.registerTool(
     'agor_worktrees_get',
     {
       description:
-        'Get detailed information about a worktree, including path, branch, and git state',
+        'Get detailed information about a branch, including path, git ref, and git state',
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
-        worktreeId: z.string().describe('Worktree ID (UUIDv7 or short ID)'),
+        worktreeId: z.string().describe('Branch ID (UUIDv7 or short ID)'),
       }),
     },
     async (args) => {
@@ -59,7 +106,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
   server.registerTool(
     'agor_worktrees_list',
     {
-      description: 'List all worktrees in a repository',
+      description: 'List all branches in a repository',
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         repoId: z.string().optional().describe('Repository ID to filter by'),
@@ -68,13 +115,13 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .boolean()
           .optional()
           .describe(
-            'Include archived worktrees in results (default: false). By default, archived worktrees are excluded.'
+            'Include archived branches in results (default: false). By default, archived branches are excluded.'
           ),
         archived: z
           .boolean()
           .optional()
           .describe(
-            'Filter to show ONLY archived worktrees. When true, returns only archived worktrees. Overrides includeArchived.'
+            'Filter to show ONLY archived branches. When true, returns only archived branches. Overrides includeArchived.'
           ),
       }),
     },
@@ -99,32 +146,32 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
     'agor_worktrees_create',
     {
       description:
-        'Create a worktree (and optional branch) for a repository, with required board placement. ' +
-        'To fork from an existing branch with a unique worktree name, set sourceBranch to the base branch ' +
+        'Create a branch (an isolated workspace with its own git ref) for a repository, with required board placement. ' +
+        'To fork from an existing git branch under a unique name, set sourceBranch to the base git branch ' +
         'and worktreeName to your desired unique name (e.g., sourceBranch="issue-282", worktreeName="issue-282-review-1"). ' +
-        'Use zoneId to place the worktree in a specific zone (pin only, no trigger). ' +
-        'For zone trigger behavior (prompt templates), use agor_worktrees_set_zone after creation.',
+        'Use zoneId to place the branch in a specific zone (pin only, no trigger). ' +
+        'For zone trigger behavior (prompt templates), use agor_branches_set_zone after creation.',
       inputSchema: z.object({
-        repoId: z.string().describe('Repository ID where the worktree will be created'),
+        repoId: z.string().describe('Repository ID where the branch will be created'),
         worktreeName: z
           .string()
           .describe(
-            'Slug name for the worktree directory (lowercase letters, numbers, hyphens). ' +
-              'If the name conflicts with an existing worktree, a numeric suffix is auto-appended (e.g., "my-feature-2"). ' +
+            'Slug name for the branch directory (lowercase letters, numbers, hyphens). ' +
+              'If the name conflicts with an existing branch, a numeric suffix is auto-appended (e.g., "my-feature-2"). ' +
               'Set autoSuffix=false to get an error on conflict instead.'
           ),
         boardId: z
           .string()
           .describe(
-            'Board ID to place the worktree on (positions to default coordinates). Required to ensure worktrees are visible in the UI.'
+            'Board ID to place the branch on (positions to default coordinates). Required to ensure branches are visible in the UI.'
           ),
         ref: z
           .string()
           .optional()
           .describe(
-            'Git branch name to create or checkout. Defaults to worktreeName when creating a new branch. ' +
-              'Set this to create a branch with a different name than the worktree directory. ' +
-              'Example: worktreeName="review-1", ref="issue-282-review-1" creates directory "review-1" on branch "issue-282-review-1".'
+            'Git ref name to create or checkout. Defaults to worktreeName when creating a new git branch. ' +
+              'Set this to create a git branch with a different name than the branch directory. ' +
+              'Example: worktreeName="review-1", ref="issue-282-review-1" creates directory "review-1" on git branch "issue-282-review-1".'
           ),
         refType: z
           .enum(['branch', 'tag'])
@@ -155,22 +202,22 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .boolean()
           .optional()
           .describe(
-            'If worktreeName conflicts with an existing worktree, automatically append a numeric suffix ' +
+            'If worktreeName conflicts with an existing branch, automatically append a numeric suffix ' +
               '(e.g., "my-feature" → "my-feature-2", "my-feature-3"). Defaults to true. Set to false to get an error on conflict instead.'
           ),
         zoneId: z
           .string()
           .optional()
           .describe(
-            'Zone ID to pin the worktree to (e.g., "zone-1770152859108"). ' +
-              'Places the worktree inside the zone with automatic positioning (pin only, no trigger). ' +
-              'For zone trigger behavior (prompt templates), use agor_worktrees_set_zone after creation.'
+            'Zone ID to pin the branch to (e.g., "zone-1770152859108"). ' +
+              'Places the branch inside the zone with automatic positioning (pin only, no trigger). ' +
+              'For zone trigger behavior (prompt templates), use agor_branches_set_zone after creation.'
           ),
-        issueUrl: z.string().optional().describe('Issue URL to associate with the worktree.'),
+        issueUrl: z.string().optional().describe('Issue URL to associate with the branch.'),
         pullRequestUrl: z
           .string()
           .optional()
-          .describe('Pull request URL to associate with the worktree.'),
+          .describe('Pull request URL to associate with the branch.'),
         // RBAC fields (optional, sensible defaults, safe to ignore for single-user setups)
         othersCan: z
           .enum(WORKTREE_PERMISSION_LEVELS)
@@ -194,7 +241,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .array(z.string())
           .optional()
           .describe(
-            'Additional user IDs to add as owners of this worktree. ' +
+            'Additional user IDs to add as owners of this branch. ' +
               'The creating user is always added as owner automatically. ' +
               'Owners have full access regardless of othersCan/othersFsAccess settings.'
           ),
@@ -202,10 +249,10 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .string()
           .optional()
           .describe(
-            'Environment variant name to use for this worktree. ' +
+            'Environment variant name to use for this branch. ' +
               'Must be a key in the repo environment config variants. ' +
               'When omitted, the repo default variant is used. ' +
-              'Use agor_environment_set later to switch variants on an existing worktree.'
+              'Use agor_environment_set later to switch variants on an existing branch.'
           ),
       }),
     },
@@ -341,7 +388,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
         response._zone = { zone_id: zoneId };
       } else {
         response.hint =
-          'Use agor_worktrees_set_zone to pin this worktree to a specific zone and optionally trigger zone prompt templates.';
+          'Use agor_branches_set_zone to pin this branch to a specific zone and optionally trigger zone prompt templates.';
       }
 
       if (ownerWarnings.length > 0) {
@@ -357,14 +404,14 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
     'agor_worktrees_update',
     {
       description:
-        'Update metadata for an existing worktree (issue/PR URLs, notes, board placement, custom context, RBAC permissions, owners)',
+        'Update metadata for an existing branch (issue/PR URLs, notes, board placement, custom context, RBAC permissions, owners)',
       annotations: { idempotentHint: true },
       inputSchema: z.object({
         worktreeId: z
           .string()
           .optional()
           .describe(
-            'Worktree ID to update. Optional when calling from a session with a bound worktree.'
+            'Branch ID to update. Optional when calling from a session with a bound branch.'
           ),
         issueUrl: z
           .string()
@@ -383,13 +430,13 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .nullable()
           .optional()
           .describe(
-            'Freeform notes about the worktree (markdown supported). Pass null or empty string to clear.'
+            'Freeform notes about the branch (markdown supported). Pass null or empty string to clear.'
           ),
         boardId: z
           .string()
           .nullable()
           .optional()
-          .describe('Board ID to place this worktree on. Pass null to remove from any board.'),
+          .describe('Board ID to place this branch on. Pass null to remove from any board.'),
         customContext: z
           .record(z.string(), z.unknown())
           .nullable()
@@ -402,7 +449,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .nullable()
           .optional()
           .describe(
-            'Default MCP server IDs for new sessions in this worktree. Sessions inherit these unless they explicitly specify their own. Pass null to clear.'
+            'Default MCP server IDs for new sessions in this branch. Sessions inherit these unless they explicitly specify their own. Pass null to clear.'
           ),
         // RBAC fields (optional, safe to ignore for single-user setups)
         othersCan: z
@@ -427,7 +474,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .array(z.string())
           .optional()
           .describe(
-            'User IDs to ADD as owners of this worktree. ' +
+            'User IDs to ADD as owners of this branch. ' +
               'Owners have full access regardless of othersCan/othersFsAccess settings. ' +
               'Idempotent — adding an existing owner is a no-op.'
           ),
@@ -435,7 +482,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .array(z.string())
           .optional()
           .describe(
-            'User IDs to REMOVE as owners of this worktree. ' +
+            'User IDs to REMOVE as owners of this branch. ' +
               'Idempotent — removing a non-owner is a no-op.'
           ),
       }),
@@ -448,7 +495,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
         const currentSession = await ctx.app.service('sessions').get(ctx.sessionId);
         const sessionWorktreeId = currentSession.worktree_id;
         if (!sessionWorktreeId)
-          throw new Error('worktreeId is required when current session is not bound to a worktree');
+          throw new Error('worktreeId is required when current session is not bound to a branch');
         resolvedWorktreeId = sessionWorktreeId;
       }
 
@@ -568,7 +615,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
 
       return textResult({
         worktree,
-        note: 'Worktree metadata updated successfully.',
+        note: 'Branch metadata updated successfully.',
         ...(ownerErrors.length > 0 ? { ownerWarnings: ownerErrors } : {}),
       });
     }
@@ -579,10 +626,10 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
     'agor_worktrees_set_zone',
     {
       description:
-        "Pin a worktree to a zone on a board and optionally trigger the zone's prompt template. Calculates zone center position automatically and creates board association. If the zone has an 'always_new' trigger, a new session is automatically created and the prompt template is executed (matching UI drag-drop behavior). For 'show_picker' zones, use triggerTemplate + targetSessionId to send to an existing session.",
+        "Pin a branch to a zone on a board and optionally trigger the zone's prompt template. Calculates zone center position automatically and creates board association. If the zone has an 'always_new' trigger, a new session is automatically created and the prompt template is executed (matching UI drag-drop behavior). For 'show_picker' zones, use triggerTemplate + targetSessionId to send to an existing session.",
       inputSchema: z.object({
-        worktreeId: z.string().describe('Worktree ID to pin to the zone (UUIDv7 or short ID)'),
-        zoneId: z.string().describe('Zone ID to pin the worktree to (e.g., "zone-1770152859108")'),
+        worktreeId: z.string().describe('Branch ID to pin to the zone (UUIDv7 or short ID)'),
+        zoneId: z.string().describe('Zone ID to pin the branch to (e.g., "zone-1770152859108")'),
         targetSessionId: z
           .string()
           .optional()
@@ -611,7 +658,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
       const worktree = await ctx.app.service('worktrees').get(worktreeId, ctx.baseServiceParams);
 
       if (!worktree.board_id) {
-        throw new Error('Worktree must be on a board before it can be pinned to a zone');
+        throw new Error('Branch must be on a board before it can be pinned to a zone');
       }
 
       // Get board to find zone definition
@@ -828,15 +875,15 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
     'agor_worktrees_archive',
     {
       description:
-        'Archive a worktree (soft delete). Stops the environment if running, optionally cleans or deletes the filesystem, archives the worktree metadata and all its sessions, and removes it from the board. Use agor_worktrees_unarchive to restore.',
+        'Archive a branch (soft delete). Stops the environment if running, optionally cleans or deletes the filesystem, archives the branch metadata and all its sessions, and removes it from the board. Use agor_branches_unarchive to restore.',
       annotations: { destructiveHint: true },
       inputSchema: z.object({
-        worktreeId: z.string().describe('Worktree ID to archive (UUIDv7 or short ID)'),
+        worktreeId: z.string().describe('Branch ID to archive (UUIDv7 or short ID)'),
         filesystemAction: z
           .enum(['preserved', 'cleaned', 'deleted'])
           .optional()
           .describe(
-            'What to do with the worktree files on disk. "preserved" leaves files untouched, "cleaned" runs git clean -fdx (removes node_modules, builds, untracked files), "deleted" removes the entire worktree directory. Default: "cleaned".'
+            'What to do with the branch files on disk. "preserved" leaves files untouched, "cleaned" runs git clean -fdx (removes node_modules, builds, untracked files), "deleted" removes the entire branch directory. Default: "cleaned".'
           ),
       }),
     },
@@ -853,7 +900,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
       return textResult({
         success: true,
         worktree: result,
-        message: 'Worktree archived successfully.',
+        message: 'Branch archived successfully.',
       });
     }
   );
@@ -863,10 +910,10 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
     'agor_worktrees_unarchive',
     {
       description:
-        'Restore a previously archived worktree. Optionally place it back on a board. Also unarchives all sessions that were archived as part of the worktree archival.',
+        'Restore a previously archived branch. Optionally place it back on a board. Also unarchives all sessions that were archived as part of the branch archival.',
       inputSchema: z.object({
-        worktreeId: z.string().describe('Worktree ID to unarchive (UUIDv7 or short ID)'),
-        boardId: z.string().optional().describe('Board ID to restore the worktree onto (optional)'),
+        worktreeId: z.string().describe('Branch ID to unarchive (UUIDv7 or short ID)'),
+        boardId: z.string().optional().describe('Board ID to restore the branch onto (optional)'),
       }),
     },
     async (args) => {
@@ -882,7 +929,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
       return textResult({
         success: true,
         worktree: result,
-        message: 'Worktree unarchived successfully.',
+        message: 'Branch unarchived successfully.',
       });
     }
   );
@@ -892,15 +939,15 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
     'agor_worktrees_delete',
     {
       description:
-        'Permanently delete a worktree and all its sessions, messages, and tasks. This action cannot be undone. Stops the environment if running and optionally removes files from disk.',
+        'Permanently delete a branch and all its sessions, messages, and tasks. This action cannot be undone. Stops the environment if running and optionally removes files from disk.',
       annotations: { destructiveHint: true },
       inputSchema: z.object({
-        worktreeId: z.string().describe('Worktree ID to delete (UUIDv7 or short ID)'),
+        worktreeId: z.string().describe('Branch ID to delete (UUIDv7 or short ID)'),
         filesystemAction: z
           .enum(['preserved', 'deleted'])
           .optional()
           .describe(
-            'What to do with the worktree files on disk. "preserved" leaves files untouched, "deleted" removes the entire worktree directory. Default: "deleted".'
+            'What to do with the branch files on disk. "preserved" leaves files untouched, "deleted" removes the entire branch directory. Default: "deleted".'
           ),
       }),
     },
@@ -916,7 +963,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
       return textResult({
         success: true,
         worktree_id: worktreeId,
-        message: 'Worktree permanently deleted.',
+        message: 'Branch permanently deleted.',
       });
     }
   );

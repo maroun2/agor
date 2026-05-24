@@ -10,10 +10,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AssistantTabResult } from './tabs/AssistantTab';
 import { AssistantTab } from './tabs/AssistantTab';
 import { BoardTab } from './tabs/BoardTab';
+import type { BranchTabConfig } from './tabs/BranchTab';
+import { BranchTab } from './tabs/BranchTab';
 import type { RepoTabResult } from './tabs/RepoTab';
 import { RepoTab } from './tabs/RepoTab';
-import type { WorktreeTabConfig } from './tabs/WorktreeTab';
-import { WorktreeTab } from './tabs/WorktreeTab';
 
 type ActiveTab = 'worktree' | 'assistant' | 'board' | 'repository';
 
@@ -27,7 +27,7 @@ const INITIAL_VALIDITY: Record<ActiveTab, boolean> = {
 const PURPOSE_TEXT: Record<ActiveTab, React.ReactNode> = {
   worktree: (
     <>
-      A worktree (built on{' '}
+      A branch (built on{' '}
       <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener noreferrer">
         git worktrees
       </a>
@@ -39,13 +39,13 @@ const PURPOSE_TEXT: Record<ActiveTab, React.ReactNode> = {
   assistant:
     'Assistants are long-lived agents with an identity, purpose, and goals. Think of them like employees. They have memory, can build their own skills, coordinate multiple coding agents, typically operate on their own Agor board, and can act proactively.',
   board:
-    'Boards are spatial canvases for organizing work. They contain worktrees, zones, cards, and other visual elements. Use boards to create workspaces for teams, projects, or assistants.',
+    'Boards are spatial canvases for organizing work. They contain branches, zones, cards, and other visual elements. Use boards to create workspaces for teams, projects, or assistants.',
   repository:
-    'Repositories connect your code to Agor. They can be cloned from GitHub or registered from a local path. Once connected, you can create worktrees for coding tasks.',
+    'Repositories connect your code to Agor. They can be cloned from GitHub or registered from a local path. Once connected, you can create branches for coding tasks.',
 };
 
 const ACTION_LABELS: Record<ActiveTab, string> = {
-  worktree: 'Create Worktree',
+  worktree: 'Create Branch',
   assistant: 'Create Assistant',
   board: 'Create Board',
   repository: 'Add Repository',
@@ -59,7 +59,7 @@ export interface CreateDialogProps {
   currentBoardId?: string;
   defaultPosition?: { x: number; y: number };
   defaultTab?: ActiveTab;
-  onCreateWorktree: (config: WorktreeTabConfig) => void;
+  onCreateWorktree: (config: BranchTabConfig) => void;
   onCreateBoard: (board: Partial<Board>) => void;
   onCreateRepo: (data: CreateRepoRequest) => void | Promise<void>;
   onCreateLocalRepo: (data: CreateLocalRepoRequest) => void | Promise<void>;
@@ -89,7 +89,7 @@ export const CreateDialog: React.FC<CreateDialogProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form submit refs — each tab exposes a submit function
-  const worktreeFormRef = useRef<(() => Promise<WorktreeTabConfig | null>) | null>(null);
+  const worktreeFormRef = useRef<(() => Promise<BranchTabConfig | null>) | null>(null);
   const boardFormRef = useRef<(() => Promise<Partial<Board> | null>) | null>(null);
   const repoFormRef = useRef<(() => Promise<RepoTabResult | null>) | null>(null);
   const assistantFormRef = useRef<(() => Promise<AssistantTabResult | null>) | null>(null);
@@ -183,7 +183,7 @@ export const CreateDialog: React.FC<CreateDialogProps> = ({
       label: (
         <span>
           <BranchesOutlined style={{ marginRight: 8 }} />
-          Worktree
+          Branch
         </span>
       ),
       children: (
@@ -194,7 +194,7 @@ export const CreateDialog: React.FC<CreateDialogProps> = ({
             description={PURPOSE_TEXT.worktree}
             style={{ marginBottom: 16 }}
           />
-          <WorktreeTab
+          <BranchTab
             repoById={repoById}
             currentBoardId={currentBoardId}
             defaultPosition={defaultPosition}

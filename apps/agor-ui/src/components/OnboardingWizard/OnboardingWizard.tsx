@@ -936,11 +936,11 @@ export function OnboardingWizard({
         setCurrentStep('launch');
       } else {
         setLoading(false);
-        setError('Failed to create worktree. Please try again.');
+        setError('Failed to create branch. Please try again.');
       }
     } catch (err) {
       setLoading(false);
-      setError(`Failed to create worktree: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Failed to create branch: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [
     createdRepoId,
@@ -999,7 +999,7 @@ export function OnboardingWizard({
 
   const handleLaunch = useCallback(async () => {
     if (!createdWorktreeId || !createdBoardId || !path) {
-      setError('Missing worktree or board.');
+      setError('Missing branch or board.');
       return;
     }
 
@@ -1124,7 +1124,7 @@ export function OnboardingWizard({
                 workflows.
               </Paragraph>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                API key → Clone assistant framework → Board → Worktree → Launch
+                API key → Clone assistant framework → Board → Branch → Launch
               </Text>
             </div>
           </Space>
@@ -1148,7 +1148,7 @@ export function OnboardingWizard({
                 Connect an existing Git repository and start coding with AI agents.
               </Paragraph>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                API key → Add repository → Board → Worktree → Launch
+                API key → Add repository → Board → Branch → Launch
               </Text>
             </div>
           </Space>
@@ -1323,7 +1323,7 @@ export function OnboardingWizard({
     <div style={{ textAlign: 'center', padding: '32px 0' }}>
       <Title level={4}>Create Your Personal Board</Title>
       <Paragraph type="secondary">
-        Boards are spatial canvases where you organize worktrees, sessions, and AI agents. We'll
+        Boards are spatial canvases where you organize branches, sessions, and AI agents. We'll
         create a personal board for you.
       </Paragraph>
 
@@ -1369,17 +1369,17 @@ export function OnboardingWizard({
       (createdRepoId ? repoById.get(createdRepoId)?.default_branch : null) || 'main';
     return (
       <div style={{ padding: '16px 0' }}>
-        <Title level={4}>Create Your Worktree</Title>
+        <Title level={4}>Create Your Branch</Title>
         <Paragraph type="secondary">
-          A worktree is an isolated copy of your repo with its own branch.
+          A branch is an isolated workspace backed by its own git branch.
           {path === 'assistant'
-            ? " We'll set up a worktree for your assistant."
+            ? " We'll set up a branch for your assistant."
             : ' Name it whatever you like.'}
         </Paragraph>
 
         <Form layout="vertical">
           <Form.Item
-            label="Worktree / branch name"
+            label="Branch name"
             extra={
               <>
                 Used as both the directory name and the new branch name. Forked from{' '}
@@ -1403,7 +1403,7 @@ export function OnboardingWizard({
           loading={loading}
           disabled={!branchName.trim()}
         >
-          Create Worktree
+          Create Branch
         </Button>
       </div>
     );
@@ -1448,7 +1448,7 @@ export function OnboardingWizard({
               Agor's terminal.
             </Paragraph>
             <Paragraph type="secondary" style={{ marginBottom: 16, fontSize: 12 }}>
-              Defaults: auto-approves tool calls inside the worktree sandbox. Tighten in{' '}
+              Defaults: auto-approves tool calls inside the branch sandbox. Tighten in{' '}
               <Text strong>Session Settings</Text>.
             </Paragraph>
           </>
@@ -1610,7 +1610,7 @@ export function OnboardingWizard({
       <Paragraph type="secondary">
         {path === 'assistant'
           ? "Your assistant is set up. Let's create your first session!"
-          : "Your worktree is ready. Let's launch a session!"}
+          : "Your branch is ready. Let's launch a session!"}
       </Paragraph>
 
       {error && (
@@ -1675,7 +1675,7 @@ export function OnboardingWizard({
       'add-repo': 'Repo',
       clone: path === 'own-repo' ? 'Repo' : 'Clone',
       board: 'Board',
-      worktree: 'Worktree',
+      worktree: 'Branch',
       'api-keys': 'Keys',
       launch: 'Launch',
     };
@@ -1761,7 +1761,7 @@ export function OnboardingWizard({
             description={
               <div style={{ maxWidth: 280 }}>
                 Clears local state and onboarding progress in your user preferences. Repos, boards,
-                and worktrees you created stay put.
+                and branches you created stay put.
               </div>
             }
             okText="Reset"

@@ -4,7 +4,7 @@ import { useThemedModal } from '../utils/modal';
 
 /**
  * Single source of truth for the "nuke environment" confirmation dialog.
- * Callers (EnvironmentPill, WorktreeHeaderPill, EnvironmentTab) must use
+ * Callers (EnvironmentPill, BranchHeaderPill, EnvironmentTab) must use
  * this so the destructive copy and button styling stay consistent.
  */
 export function useConfirmNukeEnvironment() {
@@ -22,7 +22,7 @@ export function useConfirmNukeEnvironment() {
           </p>
           <p>
             This typically removes all Docker volumes, databases, and other environment state.
-            Source files in the worktree are not deleted, but anything stored inside containers or
+            Source files in the branch are not deleted, but anything stored inside containers or
             volumes may be lost.
           </p>
         </>

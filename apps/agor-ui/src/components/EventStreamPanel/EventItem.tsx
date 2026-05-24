@@ -17,10 +17,10 @@ import {
 import { Button, Popover, Typography, theme } from 'antd';
 import React from 'react';
 import type { SocketEvent } from '../../hooks/useEventStream';
+import BranchCard from '../BranchCard/BranchCard';
 import { UserAvatar } from '../metadata/UserAvatar';
 import { EventStreamPill, SessionMetadataCard } from '../Pill';
 import { Tag } from '../Tag';
-import WorktreeCard from '../WorktreeCard/WorktreeCard';
 
 const { Text } = Typography;
 
@@ -296,9 +296,9 @@ const EventItemComponent = ({
           label={worktree.name}
           icon={FolderOutlined}
           color="geekblue"
-          copyLabel="Worktree ID"
+          copyLabel="Branch ID"
           metadataCard={
-            <WorktreeCard
+            <BranchCard
               worktree={worktree}
               repo={repo}
               sessions={worktreeSessions}

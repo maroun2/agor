@@ -83,13 +83,14 @@ export function registerSearchTools(server: McpServer, registry: ToolRegistry): 
           .string()
           .optional()
           .describe(
-            'Search keywords (e.g. "worktree create", "cards", "environment"). Omit to browse by domain.'
+            'Search keywords (e.g. "branch create", "cards", "environment"). Omit to browse by domain.'
           ),
         domain: z
           .string()
           .optional()
           .describe(
-            'Filter by domain (e.g. "sessions", "worktrees", "boards", "cards", "environment")'
+            'Filter by domain (e.g. "sessions", "worktrees", "boards", "cards", "environment"). ' +
+              'Note: the "worktrees" domain exposes branch-facing `agor_branches_*` tool aliases alongside the legacy `agor_worktrees_*` names.'
           ),
         detail: z
           .enum(['list', 'full'])
@@ -146,7 +147,7 @@ export function registerSearchTools(server: McpServer, registry: ToolRegistry): 
         'Execute an Agor MCP tool by name. Use agor_search_tools first to discover available tools and their input schemas, then call this to invoke them.',
       inputSchema: z
         .object({
-          tool_name: z.string().describe('The tool name to execute (e.g. "agor_worktrees_list")'),
+          tool_name: z.string().describe('The tool name to execute (e.g. "agor_branches_list")'),
           arguments: z
             .preprocess(
               // Some MCP clients double-serialize nested objects as JSON strings.
