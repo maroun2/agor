@@ -3,10 +3,11 @@
  */
 
 import type { AgenticToolName, BoardObject, ZoneTriggerBehavior } from '@agor-live/client';
-import { Alert, Form, Input, Modal, Select } from 'antd';
+import { Form, Input, Modal, Select } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { useMutationGate } from '../../../contexts/ConnectionContext';
 import { AgentSelectionGrid, AVAILABLE_AGENTS } from '../../AgentSelectionGrid';
+import { ExpandableAlert } from '../../ExpandableAlert';
 
 interface ZoneConfigModalProps {
   open: boolean;
@@ -159,17 +160,15 @@ export const ZoneConfigModal = ({
           name="triggerTemplate"
           label="Trigger Template"
           help="Leave empty for an organizational-only zone (no trigger fires on drop)."
-        >
-          <Input.TextArea
-            placeholder="Enter the prompt template that will be triggered when a branch is dropped here..."
-            rows={6}
-          />
-        </Form.Item>
-
-        <Alert
-          title="Handlebars Template Support"
-          description={
-            <div>
+          extra={
+            <ExpandableAlert
+              // Re-mount when the modal opens or the zone changes so the
+              // details collapse back to default; otherwise the AntD Modal
+              // keeps children mounted and stale `expanded` state persists.
+              key={`${objectId}:${open}`}
+              title="Handlebars template support"
+              summary="Reference branch, session, and board data with {{ ... }} syntax."
+            >
               <p style={{ marginBottom: 8 }}>
                 Use Handlebars syntax to reference session and board data in your trigger:
               </p>
@@ -207,12 +206,14 @@ export const ZoneConfigModal = ({
                   }
                 </code>
               </p>
-            </div>
+            </ExpandableAlert>
           }
-          type="info"
-          showIcon
-          style={{ marginTop: 0 }}
-        />
+        >
+          <Input.TextArea
+            placeholder="Enter the prompt template that will be triggered when a branch is dropped here..."
+            rows={6}
+          />
+        </Form.Item>
       </Form>
     </Modal>
   );
