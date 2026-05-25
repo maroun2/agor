@@ -9,9 +9,14 @@
  * @see context/guides/rbac-and-unix-isolation.md
  */
 
-import type { BoardRepository, BranchRepository, SessionRepository } from '@agor/core/db';
+import type {
+  BoardRepository,
+  BranchRepository,
+  ScheduleRepository,
+  SessionRepository,
+} from '@agor/core/db';
 import { shortId } from '@agor/core/db';
-import { Forbidden, NotAuthenticated } from '@agor/core/feathers';
+import { Forbidden, NotAuthenticated, NotFound } from '@agor/core/feathers';
 import type { Branch, BranchPermissionLevel, HookContext, Session, UUID } from '@agor/core/types';
 import { BRANCH_PERMISSION_LEVELS, ROLES } from '@agor/core/types';
 
@@ -303,67 +308,80 @@ export function scopeBranchQuery(
       });
     }
 
-    // Apply client-side filtering for non-special query params (repo_id, name, etc.)
-    let filtered = accessibleBranches;
-    for (const [key, value] of Object.entries(query)) {
-      if (key.startsWith('$') || key === 'archived') continue; // Skip operators and already-applied filters
-      // biome-ignore lint/suspicious/noExplicitAny: Dynamic property access for generic query filtering
-      filtered = filtered.filter((item: any) => item[key] === value);
-    }
-
-    // Apply sorting if specified (matches scopeSessionQuery behavior)
-    const sort = query.$sort;
-    if (sort) {
-      const sortField = Object.keys(sort)[0] as keyof Branch;
-      const sortOrder = sort[sortField] as 1 | -1;
-      filtered = [...filtered].sort((a, b) => {
-        const aVal = a[sortField];
-        const bVal = b[sortField];
-        if (aVal == null && bVal == null) return 0;
-        if (aVal == null) return 1;
-        if (bVal == null) return -1;
-        if (aVal < bVal) return sortOrder === -1 ? 1 : -1;
-        if (aVal > bVal) return sortOrder === -1 ? -1 : 1;
-        return 0;
-      });
-    }
-
-    // Apply pagination
-    const limit = query.$limit ?? filtered.length;
-    const skip = query.$skip ?? 0;
-    const paginated = filtered.slice(skip, skip + limit);
-
-    // Set result directly to bypass default query
-    // This prevents the N+1 problem from the old filterBranchesByPermission approach
-    context.result = {
-      total: filtered.length,
-      limit,
-      skip,
-      data: paginated,
-    };
-
+    // `archived` is already applied at the repo level; everything else
+    // (repo_id, name, etc.) goes through the generic client-side pass.
+    context.result = paginateClientSide(
+      accessibleBranches,
+      query as Record<string, unknown>,
+      new Set(['archived'])
+    );
     return context;
   };
 }
 
 /**
- * Helper to compare two session fields for sorting
+ * Shared filter / sort / paginate pass for `scope*Query` hooks.
  *
- * Handles string, number, and date comparisons with type safety.
+ * After the SQL-side access query returns the user's accessible rows,
+ * all three scope hooks (`scopeBranchQuery`, `scopeSessionQuery`,
+ * `scopeScheduleQuery`) need to:
+ *   1. Apply Feathers query filters that the SQL layer didn't already
+ *      handle (e.g. `schedule_id` on sessions).
+ *   2. Apply `$sort` with null-safe comparison.
+ *   3. Apply `$limit` / `$skip` pagination.
+ *
+ * Diverging implementations of this drift quickly (`scopeSessionQuery`
+ * previously dropped all non-`$` filters silently, which broke the
+ * schedules runs panel). Centralizing keeps the semantics aligned.
+ *
+ * @param rows                — the accessible rows from the repo
+ * @param query               — the Feathers query object
+ * @param skipFilterKeys      — keys to skip in the generic filter pass
+ *                              (already applied SQL-side or special-case)
  */
-function compareSessionFields(a: Session, b: Session, field: keyof Session, order: 1 | -1): number {
-  const aVal = a[field];
-  const bVal = b[field];
+export function paginateClientSide<T>(
+  rows: T[],
+  query: Record<string, unknown> | undefined,
+  skipFilterKeys: ReadonlySet<string> = new Set()
+): { total: number; limit: number; skip: number; data: T[] } {
+  const q = query ?? {};
 
-  // Handle null/undefined
-  if (aVal == null && bVal == null) return 0;
-  if (aVal == null) return 1;
-  if (bVal == null) return -1;
+  // 1. Generic equality filter for non-`$`-prefixed keys.
+  let filtered = rows;
+  for (const [key, value] of Object.entries(q)) {
+    if (key.startsWith('$') || skipFilterKeys.has(key)) continue;
+    filtered = filtered.filter(
+      // biome-ignore lint/suspicious/noExplicitAny: dynamic property access for generic query filtering
+      (item: any) => item[key] === value
+    );
+  }
 
-  // Type-safe comparison
-  if (aVal < bVal) return order === -1 ? 1 : -1;
-  if (aVal > bVal) return order === -1 ? -1 : 1;
-  return 0;
+  // 2. $sort with null-safe comparison.
+  const sort = q.$sort as Record<string, 1 | -1> | undefined;
+  if (sort) {
+    const sortField = Object.keys(sort)[0] as keyof T;
+    const sortOrder = sort[sortField as string];
+    filtered = [...filtered].sort((a, b) => {
+      const aVal = a[sortField];
+      const bVal = b[sortField];
+      if (aVal == null && bVal == null) return 0;
+      if (aVal == null) return 1;
+      if (bVal == null) return -1;
+      if (aVal < bVal) return sortOrder === -1 ? 1 : -1;
+      if (aVal > bVal) return sortOrder === -1 ? -1 : 1;
+      return 0;
+    });
+  }
+
+  // 3. Pagination.
+  const limit = (q.$limit as number | undefined) ?? filtered.length;
+  const skip = (q.$skip as number | undefined) ?? 0;
+  return {
+    total: filtered.length,
+    limit,
+    skip,
+    data: filtered.slice(skip, skip + limit),
+  };
 }
 
 /**
@@ -418,30 +436,14 @@ export function scopeSessionQuery(
       ? await sessionRepo.findAll()
       : await sessionRepo.findAccessibleSessions(userId);
 
-    // Apply sorting if specified in query
-    let sortedSessions = accessibleSessions;
-    const sort = context.params.query?.$sort;
-    if (sort) {
-      const sortField = Object.keys(sort)[0] as keyof Session;
-      const sortOrder = sort[sortField] as 1 | -1;
-      sortedSessions = [...accessibleSessions].sort((a, b) =>
-        compareSessionFields(a, b, sortField, sortOrder)
-      );
-    }
-
-    // Apply pagination if specified
-    const limit = context.params.query?.$limit ?? sortedSessions.length;
-    const skip = context.params.query?.$skip ?? 0;
-    const paginatedSessions = sortedSessions.slice(skip, skip + limit);
-
-    // Set result directly to bypass default query
-    context.result = {
-      total: sortedSessions.length,
-      limit,
-      skip,
-      data: paginatedSessions,
-    };
-
+    // Apply remaining query filters (branch_id, schedule_id, status, etc.)
+    // client-side. Without this pass, `sessions.find({ schedule_id })`
+    // silently returns all accessible sessions — which is what the
+    // ScheduleRunsPanel was hitting before this fix.
+    context.result = paginateClientSide(
+      accessibleSessions,
+      context.params.query as Record<string, unknown> | undefined
+    );
     return context;
   };
 }
@@ -1557,4 +1559,149 @@ export function determineSpawnIdentity(
     throw new Forbidden('Cannot spawn/fork session without an authenticated caller identity.');
   }
   return { created_by: callerId, usedLegacySharing: false };
+}
+
+// ============================================================================
+// Schedule-tier RBAC helpers
+// ============================================================================
+// Schedules inherit their RBAC from the parent branch (same model as
+// sessions). See docs/internal/schedules-first-class-design-2026-05-24.md §4.4.
+
+/**
+ * Scope schedules.find() to schedules whose parent branch the user can view.
+ *
+ * Sibling of `scopeSessionQuery` — uses an indexed SQL JOIN rather than
+ * an N+1 fan-out.
+ *
+ * @param scheduleRepo - ScheduleRepository instance
+ * @returns Feathers hook
+ */
+export function scopeScheduleQuery(
+  scheduleRepo: ScheduleRepository,
+  options?: { allowSuperadmin?: boolean }
+) {
+  return async (context: HookContext) => {
+    if (!context.params.provider) return context;
+    if (context.params.user?._isServiceAccount) return context;
+    if (context.method !== 'find') return context;
+
+    const userId = context.params.user?.user_id as UUID | undefined;
+    if (!userId) {
+      context.result = { total: 0, limit: 0, skip: 0, data: [] };
+      return context;
+    }
+
+    const userRole = context.params.user?.role as string | undefined;
+    const allowSuperadmin = options?.allowSuperadmin ?? true;
+
+    // Lift query filters that the repository understands (pushed into
+    // the SQL JOIN for efficiency); the rest go through the generic
+    // client-side filter pass below.
+    // biome-ignore lint/suspicious/noExplicitAny: Feathers query is loosely-typed
+    const q = (context.params.query ?? {}) as any;
+    const filter = {
+      branch_id: q.branch_id,
+      enabled:
+        q.enabled === true || q.enabled === 'true'
+          ? true
+          : q.enabled === false || q.enabled === 'false'
+            ? false
+            : undefined,
+      created_by: q.created_by,
+    };
+
+    const allSchedules = isSuperAdmin(userRole, allowSuperadmin)
+      ? await scheduleRepo.findAll(filter)
+      : await scheduleRepo.findAccessibleSchedules(userId, filter);
+
+    // `branch_id` / `enabled` / `created_by` are already applied SQL-side;
+    // pass the rest of the query through the shared paginate+sort helper.
+    context.result = paginateClientSide(
+      allSchedules,
+      q as Record<string, unknown>,
+      new Set(['branch_id', 'enabled', 'created_by'])
+    );
+    return context;
+  };
+}
+
+/**
+ * Load a schedule by ID from context.id, then load its parent branch,
+ * and cache both (plus ownership) on `context.params`.
+ *
+ * Mirrors `loadSessionBranch` — the canonical pattern for
+ * "look up the nested resource, then load its branch for RBAC".
+ *
+ * Must run BEFORE `ensureBranchPermission`.
+ *
+ * @param scheduleRepo - ScheduleRepository instance
+ * @param branchRepo - BranchRepository instance
+ */
+export function loadScheduleAndBranch(
+  scheduleRepo: ScheduleRepository,
+  branchRepo: BranchRepository
+) {
+  return async (context: HookContext) => {
+    if (!context.params.provider) return context;
+    if (context.params.user?._isServiceAccount) return context;
+
+    const id = context.id ?? context.params.route?.id;
+    if (!id) throw new Error('Schedule ID required');
+
+    const schedule = await scheduleRepo.findById(id as string);
+    if (!schedule) throw new NotFound(`Schedule not found: ${id}`);
+
+    const branch = await branchRepo.findById(schedule.branch_id);
+    if (!branch) {
+      // Cascaded delete means this should never happen; treat as a
+      // bug-class error rather than a not-found.
+      throw new NotFound(`Branch not found for schedule: ${schedule.schedule_id}`);
+    }
+
+    const userId = context.params.user?.user_id as UUID | undefined;
+    const isOwner = userId ? await branchRepo.isOwner(branch.branch_id, userId) : false;
+
+    context.params.schedule = schedule;
+    context.params.branch = branch;
+    context.params.isBranchOwner = isOwner;
+    return context;
+  };
+}
+
+/**
+ * Enforce the modify-schedule tier: `session` for the schedule's
+ * creator, `all` for everyone else. Mirrors the
+ * sessions.patch rule (see register-hooks.ts:1765-1791).
+ *
+ * Must run AFTER `loadScheduleAndBranch`.
+ */
+export function ensureCanModifySchedule(options?: { allowSuperadmin?: boolean }) {
+  return (context: HookContext) => {
+    if (!context.params.provider) return context;
+    if (context.params.user?._isServiceAccount) return context;
+    if (!context.params.user) throw new NotAuthenticated('Authentication required');
+
+    const branch = context.params.branch;
+    const schedule = context.params.schedule;
+    const isOwner = context.params.isBranchOwner ?? false;
+    if (!branch || !schedule) {
+      throw new Error('loadScheduleAndBranch hook must run before ensureCanModifySchedule');
+    }
+
+    const userId = context.params.user.user_id as UUID;
+    const userRole = context.params.user.role as string | undefined;
+    const allowSuperadmin = options?.allowSuperadmin ?? true;
+
+    // "Own" = the schedule's creator gets the session-tier bar
+    // (i.e. branch.others_can >= session); everyone else needs 'all'.
+    const requiredTier: BranchPermissionLevel = schedule.created_by === userId ? 'session' : 'all';
+
+    if (!hasBranchPermission(branch, userId, isOwner, requiredTier, userRole, allowSuperadmin)) {
+      throw new Forbidden(
+        `You need '${requiredTier}' permission on branch ${shortId(branch.branch_id)} to modify schedule ${shortId(schedule.schedule_id)}.`
+      );
+    }
+
+    return context;
+  };
 }

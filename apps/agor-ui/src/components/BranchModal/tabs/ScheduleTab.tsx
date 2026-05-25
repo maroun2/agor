@@ -1,387 +1,281 @@
-import type { AgenticToolName, Branch, MCPServer } from '@agor-live/client';
-import { getDefaultPermissionMode } from '@agor-live/client';
-import {
-  ClockCircleOutlined,
-  PlayCircleOutlined,
-  StopOutlined,
-  ThunderboltOutlined,
-} from '@ant-design/icons';
-import {
-  Alert,
-  Button,
-  Card,
-  Collapse,
-  Divider,
-  Form,
-  Input,
-  InputNumber,
-  Space,
-  Switch,
-  Typography,
-} from 'antd';
-import cronstrue from 'cronstrue';
-import { useEffect, useState } from 'react';
-import { Cron } from 'react-js-cron';
-import 'react-js-cron/dist/styles.css';
-import { useThemedMessage } from '../../../utils/message';
-import { AgenticToolConfigForm } from '../../AgenticToolConfigForm';
-import { AgentSelectionGrid, AVAILABLE_AGENTS } from '../../AgentSelectionGrid';
+/**
+ * Schedules CRUD list for a branch (§6a of the design doc).
+ *
+ * Pre-#1253 this was a one-schedule-per-branch form; now it's a list of
+ * schedules with create / edit / delete / run-now / runs-drawer.
+ */
 
-const { TextArea } = Input;
-const { Text, Paragraph } = Typography;
+import type { AgorClient, Branch, MCPServer, Schedule } from '@agor-live/client';
+import { humanizeCron } from '@agor-live/client';
+import {
+  DeleteOutlined,
+  EditOutlined,
+  PlayCircleOutlined,
+  PlusOutlined,
+  UnorderedListOutlined,
+} from '@ant-design/icons';
+import { Button, Empty, Popconfirm, Space, Spin, Switch, Table, Typography } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { useThemedMessage } from '../../../utils/message';
+import { ScheduleModal } from '../../ScheduleModal';
+import { ScheduleRunsPanel } from '../../ScheduleRunsPanel';
+
+const { Text } = Typography;
 
 interface ScheduleTabProps {
   branch: Branch;
+  client: AgorClient | null;
   mcpServerById?: Map<string, MCPServer>;
-  onUpdate?: (branchId: string, updates: Partial<Branch>) => void;
-  onExecuteScheduleNow?: (branchId: string) => Promise<void>;
+  onOpenSession?: (sessionId: string) => void;
 }
+
+const formatTimestamp = (ms: number | null | undefined) =>
+  ms ? new Date(ms).toLocaleString() : '—';
+
+const formatHumanizedCron = (cron: string): string => {
+  try {
+    return humanizeCron(cron);
+  } catch {
+    return cron;
+  }
+};
 
 export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   branch,
+  client,
   mcpServerById = new Map(),
-  onUpdate,
-  onExecuteScheduleNow,
+  onOpenSession,
 }) => {
-  const [form] = Form.useForm();
-  const { showError } = useThemedMessage();
-  const [isInitialized, setIsInitialized] = useState(false);
-  const [scheduleEnabled, setScheduleEnabled] = useState(branch.schedule_enabled || false);
-  const [cronExpression, setCronExpression] = useState(branch.schedule_cron || '0 0 * * *');
-  const [agenticTool, setAgenticTool] = useState<string>(
-    branch.schedule?.agentic_tool || 'claude-code'
-  );
-  const [retention, setRetention] = useState<number>(branch.schedule?.retention || 5);
-  const [allowConcurrentRuns, setAllowConcurrentRuns] = useState<boolean>(
-    branch.schedule?.allow_concurrent_runs === true
-  );
-  const [promptTemplate, setPromptTemplate] = useState<string>(
-    branch.schedule?.prompt_template || ''
-  );
-  const [humanReadable, setHumanReadable] = useState<string>('');
-  const [isExecutingNow, setIsExecutingNow] = useState(false);
+  const { showError, showSuccess } = useThemedMessage();
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const [runsPanelSchedule, setRunsPanelSchedule] = useState<Schedule | null>(null);
+  const [runningId, setRunningId] = useState<string | null>(null);
 
-  // Initialize local state and form on first mount
-  useEffect(() => {
-    if (!isInitialized) {
-      // Read from schedule object if it exists, otherwise use defaults
-      const scheduleConfig = branch.schedule;
-      const tool = (scheduleConfig?.agentic_tool || 'claude-code') as AgenticToolName;
-
-      setScheduleEnabled(branch.schedule_enabled || false);
-      setCronExpression(branch.schedule_cron || '0 0 * * *');
-      setAgenticTool(tool);
-      setRetention(scheduleConfig?.retention || 5);
-      setAllowConcurrentRuns(scheduleConfig?.allow_concurrent_runs === true);
-      setPromptTemplate(
-        scheduleConfig?.prompt_template ||
-          'Review the current state of the branch and provide a status update.'
-      );
-
-      // Initialize form values
-      form.setFieldsValue({
-        permissionMode: scheduleConfig?.permission_mode || getDefaultPermissionMode(tool),
-        mcpServerIds: scheduleConfig?.mcp_server_ids || [],
-        modelConfig: scheduleConfig?.model_config,
+  const fetchSchedules = useCallback(async () => {
+    if (!client) return;
+    setLoading(true);
+    try {
+      const result = await client.service('schedules').find({
+        query: {
+          branch_id: branch.branch_id,
+          $sort: { created_at: -1 },
+        },
       });
-
-      setIsInitialized(true);
+      setSchedules(Array.isArray(result) ? result : result.data);
+    } catch (err) {
+      console.error('Failed to load schedules:', err);
+      showError('Failed to load schedules');
+    } finally {
+      setLoading(false);
     }
-  }, [isInitialized, branch.schedule_enabled, branch.schedule_cron, branch.schedule, form]);
+  }, [client, branch.branch_id, showError]);
 
-  // Reset permission mode when the user picks a different agent tool.
-  // NOTE: This must NOT run on mount or remount — doing so would clobber the
-  // saved permission_mode that the initialize effect above just loaded into
-  // the form, causing the field to silently revert to the tool default on
-  // every save round-trip.
-  const handleAgenticToolChange = (newTool: string) => {
-    if (newTool === agenticTool) return;
-    setAgenticTool(newTool);
-    form.setFieldValue('permissionMode', getDefaultPermissionMode(newTool as AgenticToolName));
+  useEffect(() => {
+    fetchSchedules();
+  }, [fetchSchedules]);
+
+  // Live updates via Feathers events. The service emits these for every
+  // CRUD op, including ones on other branches — filter to ours.
+  useEffect(() => {
+    if (!client) return;
+    const service = client.service('schedules');
+    const matchesBranch = (s: Schedule) => s.branch_id === branch.branch_id;
+    const onCreated = (s: Schedule) => {
+      if (matchesBranch(s)) setSchedules((prev) => [s, ...prev]);
+    };
+    const onPatched = (s: Schedule) => {
+      if (matchesBranch(s)) {
+        setSchedules((prev) => prev.map((p) => (p.schedule_id === s.schedule_id ? s : p)));
+      }
+    };
+    const onRemoved = (s: Schedule) => {
+      setSchedules((prev) => prev.filter((p) => p.schedule_id !== s.schedule_id));
+    };
+    service.on('created', onCreated);
+    service.on('patched', onPatched);
+    service.on('removed', onRemoved);
+    return () => {
+      service.off('created', onCreated);
+      service.off('patched', onPatched);
+      service.off('removed', onRemoved);
+    };
+  }, [client, branch.branch_id]);
+
+  const handleNew = () => {
+    setEditingSchedule(null);
+    setModalOpen(true);
   };
 
-  // Update human-readable cron description
-  useEffect(() => {
+  const handleEdit = (schedule: Schedule) => {
+    setEditingSchedule(schedule);
+    setModalOpen(true);
+  };
+
+  const handleDelete = async (schedule: Schedule) => {
+    if (!client) return;
     try {
-      const description = cronstrue.toString(cronExpression, { verbose: true });
-      setHumanReadable(description);
-    } catch (_error) {
-      setHumanReadable('Invalid cron expression');
-    }
-  }, [cronExpression]);
-
-  const handleSave = async () => {
-    if (!onUpdate) return;
-
-    try {
-      // Get form values for advanced settings
-      const formValues = form.getFieldsValue(true);
-
-      // Build schedule config object
-      const scheduleConfig = {
-        timezone: 'UTC',
-        prompt_template: promptTemplate,
-        agentic_tool: agenticTool as 'claude-code' | 'codex' | 'gemini' | 'opencode' | 'copilot',
-        retention: retention,
-        allow_concurrent_runs: allowConcurrentRuns,
-        permission_mode: formValues.permissionMode,
-        model_config: formValues.modelConfig,
-        mcp_server_ids: formValues.mcpServerIds || [],
-        created_at: branch.schedule?.created_at || Date.now(),
-        created_by: branch.schedule?.created_by || branch.created_by,
-      };
-
-      await onUpdate(branch.branch_id, {
-        schedule_enabled: scheduleEnabled,
-        schedule_cron: cronExpression,
-        schedule: scheduleConfig,
-      });
-      // Note: onUpdate already shows a success toast, so we don't show another one here
-    } catch (error) {
-      showError('Failed to save schedule configuration');
-      console.error('Error saving schedule:', error);
+      await client.service('schedules').remove(schedule.schedule_id);
+      showSuccess(`Schedule "${schedule.name}" deleted`);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to delete schedule');
     }
   };
 
-  // Get current form values to detect changes
-  const formValues = form.getFieldsValue(true);
+  const handleRunNow = async (schedule: Schedule) => {
+    if (!client) return;
+    setRunningId(schedule.schedule_id);
+    try {
+      await client.service(`schedules/${schedule.schedule_id}/run-now`).create({});
+      showSuccess(`Triggered "${schedule.name}"`);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to trigger run');
+    } finally {
+      setRunningId(null);
+    }
+  };
 
-  const hasChanges =
-    scheduleEnabled !== (branch.schedule_enabled || false) ||
-    cronExpression !== (branch.schedule_cron || '0 0 * * *') ||
-    agenticTool !== (branch.schedule?.agentic_tool || 'claude-code') ||
-    retention !== (branch.schedule?.retention || 5) ||
-    allowConcurrentRuns !== (branch.schedule?.allow_concurrent_runs === true) ||
-    promptTemplate !== (branch.schedule?.prompt_template || '') ||
-    formValues.permissionMode !==
-      (branch.schedule?.permission_mode ||
-        getDefaultPermissionMode(agenticTool as AgenticToolName)) ||
-    JSON.stringify(formValues.modelConfig) !== JSON.stringify(branch.schedule?.model_config) ||
-    JSON.stringify(formValues.mcpServerIds) !==
-      JSON.stringify(branch.schedule?.mcp_server_ids || []);
+  const handleToggleEnabled = async (schedule: Schedule, enabled: boolean) => {
+    if (!client) return;
+    try {
+      await client.service('schedules').patch(schedule.schedule_id, { enabled });
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to update schedule');
+    }
+  };
+
+  const columns = [
+    {
+      title: 'On',
+      key: 'enabled',
+      width: 60,
+      render: (s: Schedule) => (
+        <Switch checked={s.enabled} onChange={(v) => handleToggleEnabled(s, v)} size="small" />
+      ),
+    },
+    {
+      title: 'Name',
+      key: 'name',
+      render: (s: Schedule) => (
+        <Button type="link" onClick={() => setRunsPanelSchedule(s)} style={{ padding: 0 }}>
+          {s.name}
+        </Button>
+      ),
+    },
+    {
+      title: 'When',
+      key: 'cron',
+      render: (s: Schedule) => <Text>{formatHumanizedCron(s.cron_expression)}</Text>,
+    },
+    {
+      title: 'Last run',
+      key: 'last_run_at',
+      render: (s: Schedule) =>
+        s.last_run_session_id && onOpenSession ? (
+          <Button type="link" size="small" onClick={() => onOpenSession(s.last_run_session_id!)}>
+            {formatTimestamp(s.last_run_at)}
+          </Button>
+        ) : (
+          formatTimestamp(s.last_run_at)
+        ),
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 160,
+      render: (s: Schedule) => (
+        <Space size="small">
+          <Button
+            type="text"
+            size="small"
+            icon={<PlayCircleOutlined />}
+            loading={runningId === s.schedule_id}
+            disabled={runningId === s.schedule_id}
+            onClick={() => handleRunNow(s)}
+            title="Run now"
+          />
+          <Button
+            type="text"
+            size="small"
+            icon={<UnorderedListOutlined />}
+            onClick={() => setRunsPanelSchedule(s)}
+            title="View runs"
+          />
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => handleEdit(s)}
+            title="Edit"
+          />
+          <Popconfirm
+            title="Delete schedule?"
+            description={`Are you sure you want to delete "${s.name}"?`}
+            onConfirm={() => handleDelete(s)}
+            okText="Delete"
+            cancelText="Cancel"
+            okButtonProps={{ danger: true }}
+          >
+            <Button type="text" size="small" icon={<DeleteOutlined />} danger title="Delete" />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
 
   return (
-    <Form form={form} layout="vertical" component={false}>
-      <div style={{ padding: '24px' }}>
-        <Space orientation="vertical" size="large" style={{ width: '100%' }}>
-          {/* Enable/Disable Schedule */}
-          <Card size="small">
-            <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-              <Space>
-                <Switch
-                  checked={scheduleEnabled}
-                  onChange={setScheduleEnabled}
-                  checkedChildren={<PlayCircleOutlined />}
-                  unCheckedChildren={<StopOutlined />}
-                />
-                <Text strong>Enable Schedule</Text>
-              </Space>
-              {scheduleEnabled && (
-                <Alert
-                  title="The scheduler will automatically create new sessions based on the configuration below."
-                  type="success"
-                  showIcon
-                  icon={<ClockCircleOutlined />}
-                />
-              )}
-            </Space>
-          </Card>
-
-          {/* Cron Expression */}
-          <Card size="small" title="Schedule Frequency">
-            <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-              <div>
-                <Text type="secondary" style={{ fontSize: '12px' }}>
-                  Configure when to create new sessions. All cron expressions are evaluated in{' '}
-                  <Text strong>UTC</Text> (your local time is{' '}
-                  {new Date().toLocaleTimeString(undefined, { timeZoneName: 'short' })}).
-                </Text>
-              </div>
-
-              {/* Cron Editor */}
-              <Cron
-                value={cronExpression}
-                setValue={setCronExpression}
-                allowedPeriods={['year', 'month', 'week', 'day', 'hour', 'minute']}
-                allowedDropdowns={[
-                  'period',
-                  'months',
-                  'month-days',
-                  'week-days',
-                  'hours',
-                  'minutes',
-                ]}
-                mode="multiple"
-                clockFormat="24-hour-clock"
-                clearButton={true}
-                clearButtonAction="fill-with-every"
-                humanizeLabels={true}
-                humanizeValue={false}
-                leadingZero={true}
-                shortcuts={['@yearly', '@monthly', '@weekly', '@daily', '@hourly']}
-                allowEmpty="never"
-                displayError={true}
-              />
-
-              {/* Human-readable description */}
-              <Alert
-                title={`${humanReadable} (UTC)`}
-                type="info"
-                showIcon
-                icon={<ClockCircleOutlined />}
-                style={{ marginTop: '8px' }}
-              />
-
-              {/* Manual cron input for advanced users */}
-              <Form.Item label="Cron Expression" style={{ marginBottom: 0 }}>
-                <Input
-                  value={cronExpression}
-                  onChange={(e) => setCronExpression(e.target.value)}
-                  placeholder="0 0 * * *"
-                  prefix={<ClockCircleOutlined />}
-                />
-              </Form.Item>
-            </Space>
-          </Card>
-
-          {/* Agent Selection */}
-          <Card size="small" title="Agent Selection">
-            <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                Choose which coding agent will run the scheduled sessions
-              </Text>
-              <AgentSelectionGrid
-                agents={AVAILABLE_AGENTS}
-                selectedAgentId={agenticTool}
-                onSelect={handleAgenticToolChange}
-                columns={2}
-                showComparisonLink={true}
-              />
-            </Space>
-          </Card>
-
-          {/* Agent Configuration (collapsible advanced settings) */}
-          <Collapse
-            ghost
-            destroyOnHidden={false}
-            items={[
-              {
-                key: 'agent-config',
-                label: 'Advanced Agent Settings',
-                children: (
-                  <AgenticToolConfigForm
-                    agenticTool={agenticTool as AgenticToolName}
-                    mcpServerById={mcpServerById}
-                    showHelpText={true}
-                  />
-                ),
-              },
-            ]}
-          />
-
-          {/* Prompt Template */}
-          <Card size="small" title="Prompt Template">
-            <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                Use Handlebars syntax for dynamic values. Available variables: branch, board
-              </Text>
-              <TextArea
-                value={promptTemplate}
-                onChange={(e) => setPromptTemplate(e.target.value)}
-                placeholder="Enter prompt template..."
-                rows={6}
-                style={{ fontFamily: 'monospace', fontSize: '13px' }}
-              />
-              <Paragraph type="secondary" style={{ fontSize: '11px', margin: 0 }}>
-                Example: "Review branch <code>{'{{branch.name}}'}</code> and provide status update."
-              </Paragraph>
-            </Space>
-          </Card>
-
-          {/* Retention Policy */}
-          <Card size="small" title="Retention Policy">
-            <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                Number of scheduled sessions to keep (0 = keep all)
-              </Text>
-              <Space.Compact>
-                <InputNumber
-                  value={retention}
-                  onChange={(value) => setRetention(value || 0)}
-                  min={0}
-                  max={100}
-                  style={{ width: '150px' }}
-                />
-                <Input value="sessions" disabled style={{ width: '80px', textAlign: 'center' }} />
-              </Space.Compact>
-            </Space>
-          </Card>
-
-          {/* Concurrency Policy */}
-          <Card size="small" title="Concurrency">
-            <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-              <Space>
-                <Switch
-                  checked={allowConcurrentRuns}
-                  onChange={setAllowConcurrentRuns}
-                  checkedChildren="Allow"
-                  unCheckedChildren="Block"
-                />
-                <Text strong>Allow concurrent runs</Text>
-              </Space>
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                {allowConcurrentRuns
-                  ? 'New runs will always start, even if another session is still active in this branch.'
-                  : 'If a session is already active in this branch, scheduled runs are skipped and manual "Run now" triggers return an error. This is the default.'}
-              </Text>
-            </Space>
-          </Card>
-
-          <Divider style={{ margin: '12px 0' }} />
-
-          {/* Save + Run Now Buttons */}
-          <Space>
-            <Button type="primary" onClick={handleSave} disabled={!hasChanges}>
-              Save Schedule Configuration
-            </Button>
-            {onExecuteScheduleNow && (
-              <Button
-                icon={<ThunderboltOutlined />}
-                loading={isExecutingNow}
-                disabled={
-                  isExecutingNow ||
-                  hasChanges ||
-                  !scheduleEnabled ||
-                  !cronExpression ||
-                  !promptTemplate
-                }
-                onClick={async () => {
-                  setIsExecutingNow(true);
-                  try {
-                    await onExecuteScheduleNow(branch.branch_id);
-                  } finally {
-                    setIsExecutingNow(false);
-                  }
-                }}
-                title={
-                  hasChanges
-                    ? 'Save your changes before running'
-                    : !scheduleEnabled
-                      ? 'Enable the schedule before running'
-                      : 'Run this schedule immediately using the saved configuration'
-                }
-              >
-                Run now
-              </Button>
-            )}
-            {hasChanges && (
-              <Text type="warning" style={{ fontSize: '12px' }}>
-                You have unsaved changes
-              </Text>
-            )}
-          </Space>
-        </Space>
+    <div style={{ padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+        <Text strong>Schedules for {branch.name}</Text>
+        <Button type="primary" icon={<PlusOutlined />} onClick={handleNew}>
+          New
+        </Button>
       </div>
-    </Form>
+      {loading ? (
+        <Spin />
+      ) : schedules.length === 0 ? (
+        <Empty
+          description={
+            <span>
+              No schedules yet. Schedule a prompt to fire on a cadence — hourly heartbeats, daily
+              summaries, weekly retros.
+            </span>
+          }
+        >
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleNew}>
+            New schedule
+          </Button>
+        </Empty>
+      ) : (
+        <Table
+          rowKey="schedule_id"
+          dataSource={schedules}
+          columns={columns}
+          pagination={false}
+          size="small"
+        />
+      )}
+
+      <ScheduleModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        branchId={branch.branch_id}
+        branchName={branch.name}
+        schedule={editingSchedule}
+        mcpServerById={mcpServerById}
+        client={client}
+        onSaved={() => fetchSchedules()}
+      />
+
+      <ScheduleRunsPanel
+        open={runsPanelSchedule !== null}
+        onClose={() => setRunsPanelSchedule(null)}
+        schedule={runsPanelSchedule}
+        client={client}
+        onOpenSession={onOpenSession}
+      />
+    </div>
   );
 };

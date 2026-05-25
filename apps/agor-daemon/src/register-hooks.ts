@@ -12,6 +12,7 @@ import {
   BoardRepository,
   type BranchRepository,
   type Database,
+  ScheduleRepository,
   type SessionRepository,
   shortId,
   UserMCPOAuthTokenRepository,
@@ -61,12 +62,14 @@ import {
 import {
   ensureBranchPermission,
   ensureCanCreateSession,
+  ensureCanModifySchedule,
   ensureCanPromptInSession,
   ensureCanPromptTargetSession,
   ensureCanView,
   ensureSessionImmutability,
   loadBranch,
   loadBranchFromSession,
+  loadScheduleAndBranch,
   loadSession,
   loadSessionBranch,
   PERMISSION_RANK,
@@ -75,12 +78,18 @@ import {
   scopeFindToAccessibleBoards,
   scopeFindToAccessibleBranches,
   scopeFindToAccessibleSessions,
+  scopeScheduleQuery,
   scopeSessionQuery,
   setSessionUnixUsername,
   validateSessionUnixUsername,
 } from './utils/branch-authorization.js';
 import { injectCreatedBy } from './utils/inject-created-by.js';
 import { realignRepoOriginAfterPatchHook } from './utils/realign-repo-origin.js';
+import {
+  ensureCurrentScheduleLoaded,
+  recomputeNextRunAt,
+  validateScheduleConfig,
+} from './utils/schedule-hooks.js';
 import {
   createServiceToken,
   getDaemonUrl,
@@ -2055,6 +2064,65 @@ export function registerHooks(ctx: RegisterHooksContext): void {
       },
     });
   }
+
+  // ============================================================================
+  // Schedules hooks
+  // ============================================================================
+  // Schedules inherit RBAC from the parent branch (same model as
+  // sessions). See docs/internal/schedules-first-class-design-2026-05-24.md §4.4.
+
+  const scheduleRepository = new ScheduleRepository(db);
+
+  app.service('schedules').hooks({
+    before: {
+      all: [requireAuth],
+      find: [
+        ...(branchRbacEnabled ? [scopeScheduleQuery(scheduleRepository, superadminOpts)] : []),
+      ],
+      get: [
+        ...(branchRbacEnabled
+          ? [
+              loadScheduleAndBranch(scheduleRepository, branchRepository),
+              ensureCanView(superadminOpts),
+            ]
+          : []),
+      ],
+      create: [
+        requireMinimumRole(ROLES.MEMBER, 'create schedules'),
+        ...(branchRbacEnabled
+          ? [loadBranch(branchRepository, 'branch_id'), ensureCanCreateSession(superadminOpts)]
+          : []),
+        injectCreatedBy(),
+        validateScheduleConfig(),
+        recomputeNextRunAt(),
+      ],
+      patch: [
+        requireMinimumRole(ROLES.MEMBER, 'update schedules'),
+        ...(branchRbacEnabled
+          ? [
+              loadScheduleAndBranch(scheduleRepository, branchRepository),
+              ensureCanModifySchedule(superadminOpts),
+            ]
+          : []),
+        // Lazy-load the current schedule when RBAC didn't cache it for
+        // us. `validateScheduleConfig` and `recomputeNextRunAt` both
+        // need the merged current+patch shape to do their work
+        // correctly, and they have to run on every install.
+        ensureCurrentScheduleLoaded(scheduleRepository),
+        validateScheduleConfig(),
+        recomputeNextRunAt(),
+      ],
+      remove: [
+        requireMinimumRole(ROLES.MEMBER, 'delete schedules'),
+        ...(branchRbacEnabled
+          ? [
+              loadScheduleAndBranch(scheduleRepository, branchRepository),
+              ensureBranchPermission('all', 'delete schedule', superadminOpts),
+            ]
+          : []),
+      ],
+    },
+  });
 
   // ============================================================================
   // Tasks hooks

@@ -17,6 +17,7 @@ import type {
 } from './agentic-tool';
 import type { ContextFilePath } from './context';
 import type { BoardID, BranchID, SessionID, TaskID } from './id';
+import type { ScheduleID } from './schedule';
 
 export const SessionStatus = {
   IDLE: 'idle',
@@ -370,6 +371,20 @@ export interface Session {
   scheduled_from_branch: boolean;
 
   /**
+   * First-class schedule this session was spawned from (if any).
+   *
+   * Nullable: null for ad-hoc sessions and for back-compat rows that
+   * predate the `schedules` table. `ON DELETE SET NULL` so when a
+   * schedule is removed, its sessions become orphaned runs rather
+   * than cascading deletions.
+   *
+   * Use this as the canonical link to a run's schedule;
+   * `scheduled_from_branch` + `scheduled_run_at` are kept for dedup
+   * and UI back-compat.
+   */
+  schedule_id?: ScheduleID;
+
+  /**
    * Whether this session is ready to receive a new prompt
    *
    * Set to true when a task completes successfully, indicating the agent is ready for more work.
@@ -547,12 +562,19 @@ export interface ScheduledRunMetadata {
   triggered_by?: string;
 
   /**
-   * Snapshot of schedule config at execution time
+   * Snapshot of schedule config at execution time.
    *
-   * Preserves configuration even if schedule is later modified or deleted.
-   * Useful for debugging and understanding past runs.
+   * Preserves configuration even if the schedule is later modified or
+   * deleted. Useful for debugging and understanding past runs.
+   *
+   * `schedule_id` was added when schedules became first-class — it lets
+   * "open the schedule" links resolve even after the live schedule has
+   * been deleted (the FK on `sessions.schedule_id` is SET NULL on
+   * delete, but the snapshot still carries the ID for forensics).
    */
   schedule_config_snapshot?: {
+    /** Optional first-class schedule ID; nullable for pre-#1253 rows. */
+    schedule_id?: string;
     /** Cron expression that triggered this run */
     cron: string;
     /** Timezone for cron evaluation */
