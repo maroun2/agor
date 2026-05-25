@@ -80,6 +80,12 @@ interface ArtifactNodeData {
   artifactId: string;
   width: number;
   height: number;
+  /** True when this artifact is the deep-link target of the current URL
+   *  (`/a/<artifactShort>/`). Renders the same dashed "selected"
+   *  outline used on BranchCard, layered on top of React Flow's
+   *  primary-color `selected` border so click-selection and URL-target
+   *  stay independently legible. */
+  isActiveUrlTarget?: boolean;
   onUpdate: (id: string, data: BoardObject) => void;
   /** Lifecycle-safe delete: removes filesystem + board object + DB record */
   onDeleteArtifact?: (objectId: string, artifactId: string) => void;
@@ -703,16 +709,32 @@ export const ArtifactNode = ({
 
   // Shared Card chrome — body content swaps based on load state but the
   // title bar stays put so the user always knows which artifact this is.
+  // Border still reflects error / React-Flow-selected state. The
+  // active-URL-target signal rides on `outline` (dashed, in
+  // `colorTextBase`) — same neutral selection language used on
+  // BranchCard so users learn one visual vocabulary for "this is what
+  // you navigated to."
+  const borderColor = error
+    ? token.colorErrorBorder
+    : selected
+      ? token.colorPrimary
+      : token.colorBorder;
   const cardOuterStyle = {
     width: data.width,
     height: data.height,
     background: token.colorBgContainer,
-    border: `2px solid ${error ? token.colorErrorBorder : selected ? token.colorPrimary : token.colorBorder}`,
+    border: `2px solid ${borderColor}`,
     borderRadius: 8,
     boxShadow: token.boxShadowSecondary,
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
+    ...(data.isActiveUrlTarget
+      ? {
+          outline: `2px dashed ${token.colorTextBase}`,
+          outlineOffset: -3,
+        }
+      : {}),
   } as const;
 
   // Shared resizer — same across loading / error / normal states.
