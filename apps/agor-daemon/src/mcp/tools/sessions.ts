@@ -24,6 +24,8 @@ import { z } from 'zod';
 import type { SessionsServiceImpl } from '../../declarations.js';
 import type { SessionParams } from '../../services/sessions.js';
 import { ensureCanPromptTargetSession } from '../../utils/branch-authorization.js';
+import { inspectBranchViaExecutor } from '../../utils/branch-inspect.js';
+import { resolveExecutorReadAsUser } from '../../utils/executor-read-impersonation.js';
 import {
   resolveBoardId,
   resolveBranchId,
@@ -107,6 +109,33 @@ function coerceModelConfig(
   return input;
 }
 
+function filterSessionsByBranch<T extends { branch_id?: string }>(
+  result: T[] | { data: T[]; total?: number; [key: string]: unknown },
+  branchId: string
+): T[] | { data: T[]; total?: number; [key: string]: unknown } {
+  if (Array.isArray(result)) {
+    return result.filter((session) => session.branch_id === branchId);
+  }
+
+  const data = result.data.filter((session) => session.branch_id === branchId);
+  return { ...result, data, total: data.length };
+}
+
+function redactSessionForMcp<T extends { mcp_token?: unknown }>(session: T): Omit<T, 'mcp_token'> {
+  const { mcp_token: _mcpToken, ...safeSession } = session;
+  return safeSession;
+}
+
+function redactSessionFindResult<T extends { mcp_token?: unknown }>(
+  result: T[] | { data: T[]; [key: string]: unknown }
+): Array<Omit<T, 'mcp_token'>> | { data: Array<Omit<T, 'mcp_token'>>; [key: string]: unknown } {
+  if (Array.isArray(result)) {
+    return result.map(redactSessionForMcp);
+  }
+
+  return { ...result, data: result.data.map(redactSessionForMcp) };
+}
+
 export function registerSessionTools(server: McpServer, ctx: McpContext): void {
   // Tool 1: agor_sessions_list
   server.registerTool(
@@ -151,7 +180,8 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
       if (!args.sessionType && requestedLimit) query.$limit = requestedLimit;
       if (args.status) query.status = args.status;
       if (args.boardId) query.board_id = await resolveBoardId(ctx, args.boardId);
-      if (args.branchId) query.branch_id = await resolveBranchId(ctx, args.branchId);
+      const branchId = args.branchId ? await resolveBranchId(ctx, args.branchId) : undefined;
+      if (branchId) query.branch_id = branchId;
       if (args.archived === true) {
         query.archived = true;
       } else if (!args.includeArchived) {
@@ -159,21 +189,33 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
       }
       const result = await ctx.app.service('sessions').find({ query, ...ctx.baseServiceParams });
 
+      // Defense-in-depth: the sessions service normally handles branch_id in
+      // its query filter, but MCP callers rely on this tool contract. Keep the
+      // response scoped even if an adapter/hook layer drops or rewrites the
+      // query before it reaches the repository.
+      const branchScopedResult = branchId ? filterSessionsByBranch(result, branchId) : result;
+
       // Apply sessionType filter (post-query since custom_context/scheduled_from_branch aren't in query schema)
       if (args.sessionType) {
         const targetType = args.sessionType as SessionType;
         const filterFn = (s: Session) => getSessionType(s) === targetType;
-        const allData: Session[] = Array.isArray(result) ? result : result.data;
+        const allData: Session[] = Array.isArray(branchScopedResult)
+          ? branchScopedResult
+          : branchScopedResult.data;
         const filtered = allData.filter(filterFn);
         const limited = requestedLimit ? filtered.slice(0, requestedLimit) : filtered;
 
-        if (Array.isArray(result)) {
-          return textResult(limited);
+        if (Array.isArray(branchScopedResult)) {
+          return textResult(limited.map(redactSessionForMcp));
         }
-        return textResult({ ...result, data: limited, total: filtered.length });
+        return textResult({
+          ...branchScopedResult,
+          data: limited.map(redactSessionForMcp),
+          total: filtered.length,
+        });
       }
 
-      return textResult(result);
+      return textResult(redactSessionFindResult(branchScopedResult));
     }
   );
 
@@ -198,7 +240,7 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
         .service('sessions')
         .get(args.sessionId, sessionParams as Parameters<SessionsServiceImpl['get']>[1]);
       const attached_mcp_servers = await listAttachedMcpServers(ctx, session.session_id);
-      return textResult({ ...session, attached_mcp_servers });
+      return textResult({ ...redactSessionForMcp(session), attached_mcp_servers });
     }
   );
 
@@ -275,7 +317,7 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
       const attached_mcp_servers = await listAttachedMcpServers(ctx, currentSessionId);
 
       return textResult({
-        session,
+        session: redactSessionForMcp(session),
         branch,
         repo,
         board,
@@ -540,7 +582,7 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
       );
 
       return textResult({
-        session: childSession,
+        session: redactSessionForMcp(childSession),
         taskId: task.task_id,
         status: task.status,
         note: 'Subsession created and prompt execution started in background.',
@@ -673,7 +715,7 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
             : 'Forked session created and prompt execution started.';
 
         return textResult({
-          session: updatedSession,
+          session: redactSessionForMcp(updatedSession),
           taskId: task.task_id,
           status: task.status,
           note,
@@ -702,7 +744,7 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
         );
 
         return textResult({
-          session: childSession,
+          session: redactSessionForMcp(childSession),
           taskId: task.task_id,
           status: task.status,
           note: 'Subsession created and prompt execution started.',
@@ -780,10 +822,11 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
       // Get branch to extract repo context
       const branch = await ctx.app.service('branches').get(args.branchId, ctx.baseServiceParams);
 
-      // Get current git state
-      const { getGitState, getCurrentBranch } = await import('@agor/core/git');
-      const currentSha = await getGitState(branch.path);
-      const currentRef = await getCurrentBranch(branch.path);
+      // Get current git state via executor so the daemon does not run git in the branch checkout.
+      const { currentSha, currentRef } = await inspectBranchViaExecutor(ctx.app, branch.branch_id, {
+        asUser: await resolveExecutorReadAsUser(ctx.db, user),
+        logPrefix: `[mcp.sessions.create ${branch.name}]`,
+      });
 
       // Resolve permission_config / model_config / inherited mcp_server_ids
       // from the explicit MCP args (highest priority) > user defaults > system
@@ -925,7 +968,7 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
           : '';
 
       return textResult({
-        session,
+        session: redactSessionForMcp(session),
         taskId: initialTask?.task_id,
         note: args.initialPrompt
           ? `Session created and initial prompt execution started.${callbackNote}${mcpFailureNote}`
@@ -999,7 +1042,10 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
       const session = await ctx.app
         .service('sessions')
         .patch(args.sessionId, updates, ctx.baseServiceParams);
-      return textResult({ session, note: 'Session updated successfully.' });
+      return textResult({
+        session: redactSessionForMcp(session),
+        note: 'Session updated successfully.',
+      });
     }
   );
 

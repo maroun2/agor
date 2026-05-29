@@ -444,6 +444,144 @@ export const GitBranchCleanPayloadSchema = BasePayloadSchema.extend({
 export type GitBranchCleanPayload = z.infer<typeof GitBranchCleanPayloadSchema>;
 
 // ═══════════════════════════════════════════════════════════
+// Branch Files List Payload
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Branch files list payload - list tracked files/folders for autocomplete.
+ */
+export const BranchFilesListPayloadSchema = BasePayloadSchema.extend({
+  command: z.literal('branch.files.list'),
+
+  /** JWT for Feathers authentication */
+  sessionToken: z.string(),
+
+  params: z.object({
+    /** Branch ID whose checkout should be inspected */
+    branchId: z.string().uuid(),
+
+    /** Case-insensitive substring query */
+    search: z.string(),
+
+    /** Max combined file/folder results */
+    limit: z.number().int().positive().max(100).optional().default(10),
+  }),
+});
+
+export type BranchFilesListPayload = z.infer<typeof BranchFilesListPayloadSchema>;
+
+// ═══════════════════════════════════════════════════════════
+// Branch Inspect Payload
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Branch inspect payload - read current git ref/SHA from a branch checkout.
+ */
+export const BranchInspectPayloadSchema = BasePayloadSchema.extend({
+  command: z.literal('branch.inspect'),
+
+  /** JWT for Feathers authentication */
+  sessionToken: z.string(),
+
+  params: z.object({
+    /** Branch ID whose checkout should be inspected */
+    branchId: z.string().uuid(),
+  }),
+});
+
+export type BranchInspectPayload = z.infer<typeof BranchInspectPayloadSchema>;
+
+// ═══════════════════════════════════════════════════════════
+// Branch .agor.yml Payloads
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Import branch-scoped .agor.yml from a managed branch checkout.
+ */
+export const BranchAgorYmlImportPayloadSchema = BasePayloadSchema.extend({
+  command: z.literal('branch.agor-yml.import'),
+
+  /** JWT for Feathers authentication */
+  sessionToken: z.string(),
+
+  params: z.object({
+    /** Repo ID the branch must belong to */
+    repoId: z.string().uuid(),
+
+    /** Branch ID whose checkout should be read */
+    branchId: z.string().uuid(),
+  }),
+});
+
+export type BranchAgorYmlImportPayload = z.infer<typeof BranchAgorYmlImportPayloadSchema>;
+
+/**
+ * Export environment config into branch-scoped .agor.yml in a managed checkout.
+ */
+export const BranchAgorYmlExportPayloadSchema = BasePayloadSchema.extend({
+  command: z.literal('branch.agor-yml.export'),
+
+  /** JWT for Feathers authentication */
+  sessionToken: z.string(),
+
+  params: z.object({
+    /** Repo ID the branch must belong to */
+    repoId: z.string().uuid(),
+
+    /** Branch ID whose checkout should be written */
+    branchId: z.string().uuid(),
+
+    /** Environment config to serialize */
+    environment: z.unknown(),
+  }),
+});
+
+export type BranchAgorYmlExportPayload = z.infer<typeof BranchAgorYmlExportPayloadSchema>;
+
+// ═══════════════════════════════════════════════════════════
+// Git Repo Realign Origin Payload
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Git repo origin realign payload - ensure remote.origin.url matches DB.
+ */
+export const GitRepoRealignOriginPayloadSchema = BasePayloadSchema.extend({
+  command: z.literal('git.repo.realign-origin'),
+
+  /** JWT for Feathers authentication */
+  sessionToken: z.string(),
+
+  params: z.object({
+    /** Repo ID to inspect and realign */
+    repoId: z.string().uuid(),
+  }),
+});
+
+export type GitRepoRealignOriginPayload = z.infer<typeof GitRepoRealignOriginPayloadSchema>;
+
+// ═══════════════════════════════════════════════════════════
+// Git Repo Delete Payload
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Git repo delete payload - remove managed repo + branch directories.
+ * The daemon deletes DB rows only after this command succeeds.
+ */
+export const GitRepoDeletePayloadSchema = BasePayloadSchema.extend({
+  command: z.literal('git.repo.delete'),
+
+  /** JWT for Feathers authentication */
+  sessionToken: z.string(),
+
+  params: z.object({
+    /** Repo being deleted; executor fetches/derives managed paths itself */
+    repoId: z.string().uuid(),
+  }),
+});
+
+export type GitRepoDeletePayload = z.infer<typeof GitRepoDeletePayloadSchema>;
+
+// ═══════════════════════════════════════════════════════════
 // Unix Sync Payloads - High-Level Sync Operations
 // ═══════════════════════════════════════════════════════════
 
@@ -660,6 +798,12 @@ export const ExecutorPayloadSchema = z.discriminatedUnion('command', [
   GitBranchAddPayloadSchema,
   GitBranchRemovePayloadSchema,
   GitBranchCleanPayloadSchema,
+  BranchFilesListPayloadSchema,
+  BranchInspectPayloadSchema,
+  BranchAgorYmlImportPayloadSchema,
+  BranchAgorYmlExportPayloadSchema,
+  GitRepoRealignOriginPayloadSchema,
+  GitRepoDeletePayloadSchema,
   UnixSyncBranchPayloadSchema,
   UnixSyncRepoPayloadSchema,
   UnixSyncUserPayloadSchema,
@@ -716,6 +860,12 @@ export function getSupportedCommands(): string[] {
     'git.branch.add',
     'git.branch.remove',
     'git.branch.clean',
+    'branch.files.list',
+    'branch.inspect',
+    'branch.agor-yml.import',
+    'branch.agor-yml.export',
+    'git.repo.realign-origin',
+    'git.repo.delete',
     'unix.sync-branch',
     'unix.sync-repo',
     'unix.sync-user',

@@ -122,7 +122,7 @@ describe('sessionless MCP context', () => {
     expect(result.isError).toBe(true);
     expect(parsed.error).toMatch(/requires current Agor session context/i);
     expect(parsed.error).toMatch(/X-Agor-Session-Id/);
-    expect(parsed.error).toMatch(/\\?sessionId=/);
+    expect(parsed.error).toMatch(/\?sessionId=/);
     expect(sessionsGet).not.toHaveBeenCalled();
   });
 
@@ -143,6 +143,80 @@ describe('sessionless MCP context', () => {
     expect(parsed.error).toMatch(/requires current Agor session context/i);
     expect(parsed.error).toMatch(/X-Agor-Session-Id/);
     expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('agor_sessions_list', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('enforces branchId filtering even if the sessions service returns broader data', async () => {
+    const findCalls: unknown[] = [];
+    const app = makeFakeApp({
+      branches: { get: async (id: string) => ({ branch_id: id }) },
+      sessions: {
+        find: async (params: unknown) => {
+          findCalls.push(params);
+          return {
+            total: 2,
+            limit: 50,
+            skip: 0,
+            data: [
+              { session_id: 'sess-target', branch_id: 'wt-1', status: 'idle', mcp_token: 'tok1' },
+              { session_id: 'sess-other', branch_id: 'wt-2', status: 'idle', mcp_token: 'tok2' },
+            ],
+          };
+        },
+      },
+    });
+
+    const { agor_sessions_list } = await registerAndCaptureHandlers(
+      { app, userId: 'user-1', sessionId: 'sess-caller' },
+      ['agor_sessions_list']
+    );
+
+    const result = await agor_sessions_list({ branchId: 'wt-1' });
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(findCalls[0]).toMatchObject({ query: { branch_id: 'wt-1', archived: false } });
+    expect(parsed.total).toBe(1);
+    expect(parsed.data).toHaveLength(1);
+    expect(parsed.data[0].session_id).toBe('sess-target');
+    expect(parsed.data[0]).not.toHaveProperty('mcp_token');
+  });
+});
+
+describe('agor_sessions_get', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('redacts mcp_token from the returned session payload', async () => {
+    const app = makeFakeApp({
+      sessions: {
+        get: async (id: string) => ({
+          session_id: id,
+          branch_id: 'wt-1',
+          status: 'idle',
+          mcp_token: 'secret-token',
+        }),
+      },
+      'session-mcp-servers': { find: async () => ({ data: [] }) },
+    });
+
+    const { agor_sessions_get } = await registerAndCaptureHandlers(
+      { app, userId: 'user-1', sessionId: 'sess-caller' },
+      ['agor_sessions_get']
+    );
+
+    const result = await agor_sessions_get({ sessionId: 'sess-target' });
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed.session_id).toBe('sess-target');
+    expect(parsed).not.toHaveProperty('mcp_token');
   });
 });
 
@@ -168,9 +242,8 @@ describe('agor_sessions_create', () => {
   };
 
   beforeEach(() => {
-    vi.doMock('@agor/core/git', () => ({
-      getGitState: async () => 'sha-abc',
-      getCurrentBranch: async () => 'main',
+    vi.doMock('../../utils/branch-inspect.js', () => ({
+      inspectBranchViaExecutor: async () => ({ currentSha: 'sha-abc', currentRef: 'main' }),
     }));
     vi.doMock('@agor/core/types', async () => {
       const actual = await vi.importActual<Record<string, unknown>>('@agor/core/types');
@@ -197,7 +270,11 @@ describe('agor_sessions_create', () => {
       sessions: {
         create: async (data: unknown) => {
           sessionCreates.push(data);
-          return { session_id: 'sess-new', ...(data as Record<string, unknown>) };
+          return {
+            session_id: 'sess-new',
+            mcp_token: 'secret-token',
+            ...(data as Record<string, unknown>),
+          };
         },
       },
       '/sessions/:id/mcp-servers': { create: async () => ({}) },
@@ -208,7 +285,7 @@ describe('agor_sessions_create', () => {
       ['agor_sessions_create']
     );
 
-    await agor_sessions_create({
+    const result = await agor_sessions_create({
       branchId: 'wt-1',
       agenticTool: 'claude-code',
       modelConfig: { model: 'claude-opus-4-6', mode: 'alias', effort: 'max' },
@@ -222,6 +299,9 @@ describe('agor_sessions_create', () => {
     expect(created.model_config.mode).toBe('alias');
     expect(created.model_config.effort).toBe('max');
     expect(typeof created.model_config.updated_at).toBe('string');
+
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.session).not.toHaveProperty('mcp_token');
   });
 
   it('falls back to user default modelConfig when none is explicitly provided', async () => {
@@ -366,9 +446,8 @@ describe('agor_sessions_create', () => {
 
 describe('agor_sessions_spawn', () => {
   beforeEach(() => {
-    vi.doMock('@agor/core/git', () => ({
-      getGitState: async () => 'sha-abc',
-      getCurrentBranch: async () => 'main',
+    vi.doMock('../../utils/branch-inspect.js', () => ({
+      inspectBranchViaExecutor: async () => ({ currentSha: 'sha-abc', currentRef: 'main' }),
     }));
   });
 
@@ -453,9 +532,8 @@ describe('agor_sessions_spawn', () => {
 
 describe('agor_sessions_prompt (subsession mode)', () => {
   beforeEach(() => {
-    vi.doMock('@agor/core/git', () => ({
-      getGitState: async () => 'sha-abc',
-      getCurrentBranch: async () => 'main',
+    vi.doMock('../../utils/branch-inspect.js', () => ({
+      inspectBranchViaExecutor: async () => ({ currentSha: 'sha-abc', currentRef: 'main' }),
     }));
   });
 

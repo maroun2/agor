@@ -21,13 +21,11 @@ import {
   PAGINATION,
   parseAgorYml,
   resolveBranchStorageConfig,
-  writeAgorYml,
 } from '@agor/core/config';
 import { BranchRepository, type Database, RepoRepository, shortId } from '@agor/core/db';
 import { autoAssignBranchUniqueId } from '@agor/core/environment/variable-resolver';
 import { type Application, Forbidden, NotAuthenticated } from '@agor/core/feathers';
 import {
-  extractRepoName,
   getBranchPath,
   getDefaultBranch,
   getRemoteUrl,
@@ -47,10 +45,13 @@ import type {
   UUID,
 } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
+import { shouldUseCloneReferencePath } from '../utils/clone-reference.js';
+import { resolveExecutorReadAsUser } from '../utils/executor-read-impersonation.js';
 import { resolveGitImpersonationForUser } from '../utils/git-impersonation.js';
 import {
   generateSessionToken,
   getDaemonUrl,
+  runExecutorCommand,
   spawnExecutorFireAndForget,
 } from '../utils/spawn-executor.js';
 
@@ -230,11 +231,10 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
     // a "cloning" card immediately, then transition to ready/failed when the
     // executor patches the row.
     //
-    // local_path is computed best-effort (mirrors what the executor will use
-    // inside `cloneRepo`); the executor patches it to the actual on-disk path
-    // on success.
-    const expectedRepoName = extractRepoName(data.url);
-    const expectedLocalPath = path.join(getReposDir(), expectedRepoName);
+    // local_path is computed best-effort (mirrors what the executor will use).
+    // Use the slug, not the URL basename, so two remotes with the same repo
+    // name but distinct Agor slugs do not collide on disk.
+    const expectedLocalPath = path.join(getReposDir(), slug);
     const placeholder = (await this.create(
       {
         slug: slug as RepoSlug,
@@ -267,6 +267,7 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
           url: data.url,
           slug,
           repoId,
+          outputPath: expectedLocalPath,
           // Forward the user-supplied default_branch so the executor
           // persists what the operator typed in "Add Repository" instead
           // of silently overwriting it with origin/HEAD.
@@ -886,10 +887,11 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
             ...(cloneDepth !== undefined ? { cloneDepth } : {}),
             ...(storageMode === 'clone' && repo.remote_url ? { remoteUrl: repo.remote_url } : {}),
             // Hand the executor the per-repo base clone as a `--reference`
-            // hint. The executor checks `existsSync` on its own filesystem;
-            // missing path → silent fallback to a full clone. Lets daemon
-            // and executor live on different mounts without coupling.
-            ...(storageMode === 'clone' && repo.local_path
+            // hint only when that object cache is readable by the eventual
+            // session identity. In strict mode, per-user sessions need fully
+            // self-standing clones instead of alternates into daemon-owned
+            // managed repos.
+            ...(storageMode === 'clone' && repo.local_path && shouldUseCloneReferencePath()
               ? { referencePath: repo.local_path }
               : {}),
           },
@@ -911,30 +913,58 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
   }
 
   /**
-   * Resolve the `.agor.yml` location for an import/export request.
-   *
-   * Always reads from / writes to the given branch's working directory:
-   * `.agor.yml` is a branch-scoped file, so every import/export must name
-   * which branch (branch) it targets. Reading from the repo's base path
-   * would silently cross branch boundaries and is never what the caller
-   * wants.
+   * Authorize branch-scoped .agor.yml import/export requests.
    *
    * Routes through the branches service so RBAC hooks (loadBranch +
-   * ensureCanView) fire against the caller's params — calling the repository
-   * directly would bypass branch-level permission checks and let a user
-   * with repo access read/write a branch path they cannot see.
+   * ensureCanView) fire against the caller's params. File I/O itself happens
+   * inside the executor; the daemon only validates the branch/repo relation.
    */
-  private async resolveAgorYmlPath(
+  private async getAuthorizedAgorYmlBranch(
     repo: Repo,
     branchId: string,
     params?: RepoParams
-  ): Promise<string> {
+  ): Promise<Branch> {
     const branchesService = this.app.service('branches');
     const branch = (await branchesService.get(branchId, params)) as Branch;
     if (branch.repo_id !== repo.repo_id) {
       throw new Error(`Branch ${branchId} does not belong to repo ${repo.repo_id}`);
     }
-    return path.join(branch.path, '.agor.yml');
+    return branch;
+  }
+
+  private async runAgorYmlExecutorCommand(
+    repo: Repo,
+    branch: Branch,
+    command: 'branch.agor-yml.import' | 'branch.agor-yml.export',
+    params: Record<string, unknown>,
+    serviceParams?: RepoParams
+  ) {
+    const sessionToken = generateSessionToken(
+      this.app as unknown as { settings: { authentication?: { secret?: string } } }
+    );
+    const asUser = await resolveExecutorReadAsUser(
+      this.db,
+      (serviceParams as Partial<AuthenticatedParams> | undefined)?.user?.user_id as
+        | UserID
+        | undefined
+    );
+
+    return runExecutorCommand(
+      {
+        command,
+        sessionToken,
+        daemonUrl: getDaemonUrl(),
+        params: {
+          repoId: repo.repo_id,
+          branchId: branch.branch_id,
+          ...params,
+        },
+      },
+      {
+        logPrefix: `[${command} ${repo.slug}/${branch.name}]`,
+        asUser,
+      }
+    );
   }
 
   /**
@@ -954,11 +984,27 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
       throw new Error('branch_id is required to import .agor.yml');
     }
     const repo = await this.get(id, params);
-    const agorYmlPath = await this.resolveAgorYmlPath(repo, data.branch_id, params);
+    const branch = await this.getAuthorizedAgorYmlBranch(repo, data.branch_id, params);
 
-    // Parse .agor.yml (returns v2 RepoEnvironment; v1 is wrapped automatically).
+    const importResult = await this.runAgorYmlExecutorCommand(
+      repo,
+      branch,
+      'branch.agor-yml.import',
+      {},
+      params
+    );
+    if (!importResult.success) {
+      throw new Error(
+        `Cannot import .agor.yml from ${branch.name}: ${importResult.error?.message ?? 'executor failed'}`
+      );
+    }
+
+    // Executor parsing returns v2 RepoEnvironment; v1 is wrapped automatically.
     // `template_overrides:` at any level throws — it is DB-only.
-    const environment = parseAgorYml(agorYmlPath);
+    const environment =
+      importResult.data && typeof importResult.data === 'object'
+        ? ((importResult.data as { environment?: RepoEnvironment | null }).environment ?? null)
+        : null;
 
     if (!environment) {
       throw new Error('.agor.yml not found or has no environment configuration');
@@ -1008,13 +1054,31 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
       throw new Error('Repository has no environment configuration to export');
     }
 
-    const agorYmlPath = await this.resolveAgorYmlPath(repo, data.branch_id, params);
+    const branch = await this.getAuthorizedAgorYmlBranch(repo, data.branch_id, params);
 
     // Prefer v2 source of truth; fall back to legacy v1 view if somehow the
-    // v2 wrapper wasn't materialized (writeAgorYml handles both).
-    writeAgorYml(agorYmlPath, envToWrite ?? repo.environment_config!);
+    // v2 wrapper wasn't materialized (executor writeAgorYml handles both).
+    const exportResult = await this.runAgorYmlExecutorCommand(
+      repo,
+      branch,
+      'branch.agor-yml.export',
+      { environment: envToWrite ?? repo.environment_config! },
+      params
+    );
+    if (!exportResult.success) {
+      throw new Error(
+        `Cannot export .agor.yml to ${branch.name}: ${exportResult.error?.message ?? 'executor failed'}`
+      );
+    }
 
-    return { path: agorYmlPath };
+    const exportedPath =
+      exportResult.data && typeof exportResult.data === 'object'
+        ? (exportResult.data as { path?: unknown }).path
+        : undefined;
+
+    return {
+      path: typeof exportedPath === 'string' ? exportedPath : path.join(branch.path, '.agor.yml'),
+    };
   }
 
   /**
@@ -1057,54 +1121,49 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
       `🗑️  Repo deletion: Found ${branches.length} branch(s) for repo ${repo.slug} (${repo.repo_id})`
     );
 
-    // If cleanup is requested and this is a remote repo, delete filesystem directories FIRST
+    // If cleanup is requested and this is a remote repo, delete filesystem directories FIRST.
+    // Delegate to the executor so the daemon never rm -rfs managed repo/branch dirs itself.
     if (cleanup && repo.repo_type === 'remote') {
-      const { deleteRepoDirectory, deleteBranchDirectory } = await import('@agor/core/git');
+      const sessionToken = generateSessionToken(
+        this.app as unknown as { settings: { authentication?: { secret?: string } } }
+      );
 
-      // Track successfully deleted paths for honest error reporting
-      const deletedPaths: string[] = [];
-
-      // FAIL FAST: Stop on first filesystem deletion failure
-      // Delete branch directories from filesystem
-      for (const branch of branches) {
-        try {
-          await deleteBranchDirectory(branch.path);
-          deletedPaths.push(branch.path);
-          console.log(`🗑️  Deleted branch directory: ${branch.path}`);
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          console.error(`❌ Failed to delete branch directory ${branch.path}:`, errorMsg);
-
-          // Be honest about partial deletion
-          if (deletedPaths.length > 0) {
-            throw new Error(
-              `Partial deletion occurred: Successfully deleted ${deletedPaths.length} path(s): ${deletedPaths.join(', ')}. ` +
-                `Failed at ${branch.path}: ${errorMsg}. ` +
-                `Database NOT modified. Manual cleanup required for deleted paths.`
-            );
-          } else {
-            throw new Error(
-              `Cannot delete repository: Failed to delete branch at ${branch.path}: ${errorMsg}. ` +
-                `No files were deleted. Please fix this issue and retry.`
-            );
-          }
+      const cleanupResult = await runExecutorCommand(
+        {
+          command: 'git.repo.delete',
+          sessionToken,
+          daemonUrl: getDaemonUrl(),
+          params: {
+            repoId: repo.repo_id,
+          },
+        },
+        {
+          logPrefix: `[repo.delete ${repo.slug}]`,
+          timeoutMs: 5 * 60_000,
         }
-      }
+      );
 
-      // Delete repository directory from filesystem
-      try {
-        await deleteRepoDirectory(repo.local_path);
-        deletedPaths.push(repo.local_path);
-        console.log(`🗑️  Deleted repository directory: ${repo.local_path}`);
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`❌ Failed to delete repository directory ${repo.local_path}:`, errorMsg);
+      if (!cleanupResult.success) {
+        const errorMsg = cleanupResult.error?.message ?? 'unknown executor error';
+        const deletedPaths =
+          cleanupResult.error?.details && typeof cleanupResult.error.details === 'object'
+            ? ((cleanupResult.error.details as { deletedPaths?: unknown }).deletedPaths ?? [])
+            : [];
+        const deletedPathList = Array.isArray(deletedPaths)
+          ? deletedPaths.filter((value): value is string => typeof value === 'string')
+          : [];
 
-        // Be honest about partial deletion (branches were deleted, repo failed)
+        if (deletedPathList.length > 0) {
+          throw new Error(
+            `Partial deletion occurred: Successfully deleted ${deletedPathList.length} path(s): ${deletedPathList.join(', ')}. ` +
+              `Failed while deleting repository ${repo.slug}: ${errorMsg}. ` +
+              `Database NOT modified. Manual cleanup required for deleted paths.`
+          );
+        }
+
         throw new Error(
-          `Partial deletion occurred: Successfully deleted ${deletedPaths.length} path(s): ${deletedPaths.join(', ')}. ` +
-            `Failed to delete repository directory at ${repo.local_path}: ${errorMsg}. ` +
-            `Database NOT modified. Manual cleanup required for deleted paths.`
+          `Cannot delete repository: executor failed to delete managed directories for ${repo.slug}: ${errorMsg}. ` +
+            `No files were deleted. Please fix this issue and retry.`
         );
       }
 

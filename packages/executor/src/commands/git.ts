@@ -19,7 +19,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseAgorYml } from '@agor/core/config';
+import { parseAgorYml, writeAgorYml } from '@agor/core/config';
 import { shortId } from '@agor/core/db';
 import {
   categorizeGitError,
@@ -27,18 +27,27 @@ import {
   cloneRepo,
   createBranch,
   createBranchAsClone,
+  createGit,
   deleteBranch,
   deleteBranchDirectory,
+  deleteRepoDirectory,
+  ensureGitRemoteUrl,
   getReposDir,
   removeGitWorktree,
   restoreBranchFilesystem,
 } from '@agor/core/git';
 import type {
+  BranchAgorYmlExportPayload,
+  BranchAgorYmlImportPayload,
+  BranchFilesListPayload,
+  BranchInspectPayload,
   ExecutorResult,
   GitBranchAddPayload,
   GitBranchCleanPayload,
   GitBranchRemovePayload,
   GitClonePayload,
+  GitRepoDeletePayload,
+  GitRepoRealignOriginPayload,
 } from '../payload-types.js';
 import type { AgorClient } from '../services/feathers-client.js';
 import { createExecutorClient } from '../services/feathers-client.js';
@@ -101,6 +110,559 @@ function extractRepoName(slug: string): string {
   return parts[parts.length - 1] || slug;
 }
 
+interface FileResult {
+  path: string;
+  type: 'file' | 'folder';
+}
+
+function buildFileResults(rawLsFiles: string, search: string, limit: number): FileResult[] {
+  if (!search || search.trim() === '') return [];
+
+  const allFiles = rawLsFiles.split('\0').filter((filePath) => filePath.length > 0);
+  const foldersSet = new Set<string>();
+
+  for (const filePath of allFiles) {
+    const parts = filePath.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      foldersSet.add(parts.slice(0, i).join('/'));
+    }
+  }
+
+  const searchLower = search.toLowerCase();
+
+  const matchingFiles = allFiles
+    .filter((filePath) => filePath.toLowerCase().includes(searchLower))
+    .map((path) => ({ path, type: 'file' as const }));
+
+  const matchingFolders = Array.from(foldersSet)
+    .map((path) => `${path}/`)
+    .filter((folderPath) => folderPath.toLowerCase().includes(searchLower))
+    .map((path) => ({ path, type: 'folder' as const }));
+
+  return [...matchingFolders, ...matchingFiles].slice(0, limit);
+}
+
+/**
+ * Handle branch.files.list command.
+ * Lists tracked files/folders from the branch checkout for prompt autocomplete.
+ */
+export async function handleBranchFilesList(
+  payload: BranchFilesListPayload,
+  options: CommandOptions
+): Promise<ExecutorResult> {
+  const branchId = payload.params.branchId;
+  const search = payload.params.search;
+  const limit = payload.params.limit ?? 10;
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      data: {
+        dryRun: true,
+        command: 'branch.files.list',
+        branchId,
+        search,
+        limit,
+      },
+    };
+  }
+
+  let client: AgorClient | null = null;
+
+  try {
+    const daemonUrl = payload.daemonUrl || 'http://localhost:3030';
+    client = await createExecutorClient(daemonUrl, payload.sessionToken);
+
+    const branch = await client.service('branches').get(branchId);
+    if (!branch?.path) {
+      return { success: true, data: { results: [] } };
+    }
+
+    const { git } = createGit(branch.path);
+    const raw = await git.raw(['ls-files', '-z']);
+    const results = buildFileResults(raw, search, limit);
+
+    return {
+      success: true,
+      data: {
+        branchId,
+        results,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[branch.files.list] Failed:', errorMessage);
+    return {
+      success: false,
+      error: {
+        code: 'BRANCH_FILES_LIST_FAILED',
+        message: errorMessage,
+        details: { branchId },
+      },
+    };
+  } finally {
+    if (client) {
+      try {
+        client.io.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+  }
+}
+
+/**
+ * Handle branch.inspect command.
+ * Reads current git SHA/ref from the branch checkout.
+ */
+export async function handleBranchInspect(
+  payload: BranchInspectPayload,
+  options: CommandOptions
+): Promise<ExecutorResult> {
+  const branchId = payload.params.branchId;
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      data: {
+        dryRun: true,
+        command: 'branch.inspect',
+        branchId,
+      },
+    };
+  }
+
+  let client: AgorClient | null = null;
+
+  try {
+    const daemonUrl = payload.daemonUrl || 'http://localhost:3030';
+    client = await createExecutorClient(daemonUrl, payload.sessionToken);
+
+    const branch = await client.service('branches').get(branchId);
+    if (!branch?.path) {
+      throw new Error(`Branch ${branchId} has no path`);
+    }
+
+    const repo = await prepareBranchInspectionGitConfig(client, branch);
+    const { currentSha, currentRef } = await readBranchInspectState({
+      branchPath: branch.path,
+      repoPath: repo?.local_path,
+      fallbackRef: branch.name || '',
+      logPrefix: `[branch.inspect ${branchId}]`,
+    });
+
+    return {
+      success: true,
+      data: {
+        branchId,
+        currentSha,
+        currentRef,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[branch.inspect] Failed:', errorMessage);
+    return {
+      success: false,
+      error: {
+        code: 'BRANCH_INSPECT_FAILED',
+        message: errorMessage,
+        details: { branchId },
+      },
+    };
+  } finally {
+    if (client) {
+      try {
+        client.io.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+  }
+}
+
+async function fetchBranchForRepo(client: AgorClient, repoId: string, branchId: string) {
+  const branch = await client.service('branches').get(branchId);
+  if (!branch?.path) {
+    throw new Error(`Branch ${branchId} has no path`);
+  }
+  if (branch.repo_id !== repoId) {
+    throw new Error(`Branch ${branchId} does not belong to repo ${repoId}`);
+  }
+  return branch;
+}
+
+interface BranchPathRecord {
+  repo_id?: string;
+  path?: string;
+}
+
+async function fetchAllBranchesForRepo(
+  client: AgorClient,
+  repoId: string
+): Promise<BranchPathRecord[]> {
+  const branches: BranchPathRecord[] = [];
+  const limit = 1000;
+  let skip = 0;
+
+  while (true) {
+    const result = await client.service('branches').find({
+      query: { repo_id: repoId, $limit: limit, $skip: skip },
+    });
+    const page = (Array.isArray(result) ? result : result.data) as BranchPathRecord[];
+    branches.push(...page);
+
+    if (Array.isArray(result)) break;
+    if (page.length === 0 || branches.length >= result.total) break;
+
+    skip += page.length;
+  }
+
+  return branches;
+}
+
+async function addSafeDirectoryForCurrentUser(pathToTrust: string): Promise<void> {
+  try {
+    const { git } = createGit();
+    await git.addConfig('safe.directory', pathToTrust, true, 'global');
+  } catch (error) {
+    console.warn(
+      `[branch.inspect] Failed to add safe.directory for ${pathToTrust}:`,
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+
+async function prepareBranchInspectionGitConfig(
+  client: AgorClient,
+  branch: { path: string; repo_id?: string }
+): Promise<{ local_path?: string } | null> {
+  await addSafeDirectoryForCurrentUser(branch.path);
+
+  if (!branch.repo_id) return null;
+  try {
+    const repo = await client.service('repos').get(branch.repo_id);
+    if (repo?.local_path) {
+      await addSafeDirectoryForCurrentUser(repo.local_path);
+    }
+    return repo ?? null;
+  } catch (error) {
+    console.warn(
+      `[branch.inspect] Failed to load repo ${branch.repo_id} for safe.directory setup:`,
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
+  }
+}
+
+async function readBranchInspectState({
+  branchPath,
+  repoPath,
+  fallbackRef,
+  logPrefix,
+}: {
+  branchPath: string;
+  repoPath?: string;
+  fallbackRef: string;
+  logPrefix: string;
+}): Promise<{ currentSha: string; currentRef: string }> {
+  const { git } = createGit(branchPath);
+  const safeArgs = [
+    '-c',
+    `safe.directory=${branchPath}`,
+    ...(repoPath ? ['-c', `safe.directory=${repoPath}`] : []),
+  ];
+
+  let currentSha = 'unknown';
+  try {
+    currentSha = (await git.raw([...safeArgs, 'rev-parse', 'HEAD'])).trim() || 'unknown';
+  } catch (error) {
+    console.warn(
+      `${logPrefix} Failed to read HEAD SHA; returning currentSha=unknown:`,
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+
+  if (currentSha !== 'unknown') {
+    try {
+      const status = await git.raw([...safeArgs, 'status', '--porcelain']);
+      if (status.trim().length > 0) currentSha = `${currentSha}-dirty`;
+    } catch (error) {
+      console.warn(
+        `${logPrefix} Failed to read dirty state; returning clean SHA:`,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  let currentRef = fallbackRef;
+  try {
+    currentRef =
+      (await git.raw([...safeArgs, 'rev-parse', '--abbrev-ref', 'HEAD'])).trim() || currentRef;
+  } catch (error) {
+    console.warn(
+      `${logPrefix} Failed to read current branch; falling back to DB branch name:`,
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+
+  return { currentSha, currentRef };
+}
+
+/**
+ * Handle branch.agor-yml.import command.
+ * Reads branch-scoped .agor.yml from a managed checkout.
+ */
+export async function handleBranchAgorYmlImport(
+  payload: BranchAgorYmlImportPayload,
+  options: CommandOptions
+): Promise<ExecutorResult> {
+  const { repoId, branchId } = payload.params;
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      data: { dryRun: true, command: 'branch.agor-yml.import', repoId, branchId },
+    };
+  }
+
+  let client: AgorClient | null = null;
+  try {
+    const daemonUrl = payload.daemonUrl || 'http://localhost:3030';
+    client = await createExecutorClient(daemonUrl, payload.sessionToken);
+    const branch = await fetchBranchForRepo(client, repoId, branchId);
+    const agorYmlPath = join(branch.path, '.agor.yml');
+    const environment = parseAgorYml(agorYmlPath);
+
+    return { success: true, data: { repoId, branchId, environment } };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[branch.agor-yml.import] Failed:', errorMessage);
+    return {
+      success: false,
+      error: {
+        code: 'BRANCH_AGOR_YML_IMPORT_FAILED',
+        message: errorMessage,
+        details: { repoId, branchId },
+      },
+    };
+  } finally {
+    if (client) {
+      try {
+        client.io.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+  }
+}
+
+/**
+ * Handle branch.agor-yml.export command.
+ * Writes environment config to branch-scoped .agor.yml in a managed checkout.
+ */
+export async function handleBranchAgorYmlExport(
+  payload: BranchAgorYmlExportPayload,
+  options: CommandOptions
+): Promise<ExecutorResult> {
+  const { repoId, branchId, environment } = payload.params;
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      data: { dryRun: true, command: 'branch.agor-yml.export', repoId, branchId },
+    };
+  }
+
+  let client: AgorClient | null = null;
+  try {
+    const daemonUrl = payload.daemonUrl || 'http://localhost:3030';
+    client = await createExecutorClient(daemonUrl, payload.sessionToken);
+    const branch = await fetchBranchForRepo(client, repoId, branchId);
+    const agorYmlPath = join(branch.path, '.agor.yml');
+    writeAgorYml(agorYmlPath, environment as Parameters<typeof writeAgorYml>[1]);
+
+    return { success: true, data: { repoId, branchId, path: agorYmlPath } };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[branch.agor-yml.export] Failed:', errorMessage);
+    return {
+      success: false,
+      error: {
+        code: 'BRANCH_AGOR_YML_EXPORT_FAILED',
+        message: errorMessage,
+        details: { repoId, branchId },
+      },
+    };
+  } finally {
+    if (client) {
+      try {
+        client.io.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+  }
+}
+
+/**
+ * Handle git.repo.realign-origin command.
+ * Ensures the on-disk remote.origin.url matches the DB's canonical remote_url.
+ */
+export async function handleGitRepoRealignOrigin(
+  payload: GitRepoRealignOriginPayload,
+  options: CommandOptions
+): Promise<ExecutorResult> {
+  const repoId = payload.params.repoId;
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      data: {
+        dryRun: true,
+        command: 'git.repo.realign-origin',
+        repoId,
+      },
+    };
+  }
+
+  let client: AgorClient | null = null;
+
+  try {
+    const daemonUrl = payload.daemonUrl || 'http://localhost:3030';
+    client = await createExecutorClient(daemonUrl, payload.sessionToken);
+
+    const repo = await client.service('repos').get(repoId);
+    if (repo.repo_type !== 'remote' || !repo.remote_url || !repo.local_path) {
+      return { success: true, data: { repoId, changed: false, skipped: true } };
+    }
+
+    const result = await ensureGitRemoteUrl(repo.local_path, 'origin', repo.remote_url);
+    if (result.changed) {
+      const { redactUrlUserinfo } = await import('@agor/core/config');
+      console.warn(
+        `[SECURITY] Realigned remote.origin.url for repo ${repo.repo_id} (slug=${repo.slug}); ` +
+          `canonical URL now: ${redactUrlUserinfo(repo.remote_url)}`
+      );
+    }
+
+    return {
+      success: true,
+      data: {
+        repoId,
+        changed: result.changed,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[git.repo.realign-origin] Failed:', errorMessage);
+    return {
+      success: false,
+      error: {
+        code: 'GIT_REPO_REALIGN_ORIGIN_FAILED',
+        message: errorMessage,
+        details: { repoId },
+      },
+    };
+  } finally {
+    if (client) {
+      try {
+        client.io.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+  }
+}
+
+/**
+ * Handle git.repo.delete command.
+ * Removes managed branch directories first, then the managed repo directory.
+ */
+export async function handleGitRepoDelete(
+  payload: GitRepoDeletePayload,
+  options: CommandOptions
+): Promise<ExecutorResult> {
+  const { repoId } = payload.params;
+
+  if (options.dryRun) {
+    return {
+      success: true,
+      data: {
+        dryRun: true,
+        command: 'git.repo.delete',
+        repoId,
+      },
+    };
+  }
+
+  let client: AgorClient | null = null;
+  const deletedPaths: string[] = [];
+  let repoPath: string | undefined;
+
+  try {
+    const daemonUrl = payload.daemonUrl || 'http://localhost:3030';
+    client = await createExecutorClient(daemonUrl, payload.sessionToken);
+
+    const repo = await client.service('repos').get(repoId);
+    repoPath = repo.local_path;
+    if (!repoPath) {
+      throw new Error(`Repo ${repoId} has no local_path`);
+    }
+
+    const branches = await fetchAllBranchesForRepo(client, repoId);
+
+    const foreignBranches = branches.filter((branch) => branch.repo_id !== repoId);
+    if (foreignBranches.length > 0) {
+      throw new Error(
+        `SAFETY CHECK FAILED: Found ${foreignBranches.length} branch(es) not belonging to repo ${repoId}`
+      );
+    }
+
+    for (const branch of branches) {
+      if (!branch.path) continue;
+      await deleteBranchDirectory(branch.path);
+      deletedPaths.push(branch.path);
+      console.log(`🗑️  [git.repo.delete] Deleted branch directory: ${branch.path}`);
+    }
+
+    await deleteRepoDirectory(repoPath);
+    deletedPaths.push(repoPath);
+    console.log(`🗑️  [git.repo.delete] Deleted repository directory: ${repoPath}`);
+
+    return {
+      success: true,
+      data: {
+        repoId,
+        deletedPaths,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[git.repo.delete] Failed:', errorMessage);
+    return {
+      success: false,
+      error: {
+        code: 'GIT_REPO_DELETE_FAILED',
+        message: errorMessage,
+        details: {
+          repoId,
+          repoPath,
+          deletedPaths,
+        },
+      },
+    };
+  } finally {
+    if (client) {
+      try {
+        client.io.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+  }
+}
+
 /**
  * Handle git.clone command
  *
@@ -132,6 +694,10 @@ export async function handleGitClone(
     };
   }
 
+  const cloneOutputPath =
+    payload.params.outputPath ??
+    (payload.params.slug ? join(getReposDir(), payload.params.slug) : undefined);
+
   let client: AgorClient | null = null;
 
   try {
@@ -146,10 +712,10 @@ export async function handleGitClone(
       console.log('[git.clone] Resolved credentials:', Object.keys(env));
     }
 
-    // Determine output path - only pass targetDir if explicitly specified
-    // Otherwise let cloneRepo() compute the correct path (reposDir + repoName)
-    const outputPath = payload.params.outputPath;
+    // Determine output path. Prefer the daemon-supplied path; otherwise use
+    // the Agor slug when present so same-basename remotes do not collide.
     const reposDir = getReposDir();
+    const outputPath = cloneOutputPath;
 
     // Clone the repository. If the caller pinned a default_branch, forward
     // it as `branch` so the working tree lands on that branch — otherwise
@@ -329,7 +895,7 @@ export async function handleGitClone(
         message: errorMessage,
         details: {
           url: payload.params.url,
-          outputPath: payload.params.outputPath,
+          outputPath: cloneOutputPath,
         },
       },
     };
