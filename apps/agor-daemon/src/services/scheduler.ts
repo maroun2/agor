@@ -60,7 +60,7 @@ import {
   UsersRepository,
 } from '@agor/core/db';
 import { Forbidden } from '@agor/core/feathers';
-import { resolveSessionDefaults } from '@agor/core/sessions';
+import { resolvePermissionConfig, resolveSessionDefaults } from '@agor/core/sessions';
 import type {
   Branch,
   MCPServerID,
@@ -637,9 +637,16 @@ export class SchedulerService {
           ? `${schedule.name} — manual @ ${new Date(scheduledRunAt).toISOString()}`
           : `${schedule.name} — ${new Date(scheduledRunAt).toISOString()}`,
         contextFiles: cfg.context_files ?? [],
-        permission_config: cfg.permission_mode
-          ? { mode: cfg.permission_mode as PermissionMode }
-          : undefined,
+        permission_config: resolvePermissionConfig({
+          effectiveTool: cfg.agentic_tool,
+          overrides: {
+            permissionMode: cfg.permission_mode as PermissionMode | undefined,
+            codexSandboxMode: cfg.codex_sandbox_mode,
+            codexApprovalPolicy: cfg.codex_approval_policy,
+            codexNetworkAccess: cfg.codex_network_access,
+          },
+          userToolDefaults: creator?.default_agentic_config?.[cfg.agentic_tool],
+        }),
         // DefaultModelConfig → Session.model_config. If the schedule
         // only sets ancillary fields (e.g. Claude effort), resolve them
         // against the same model defaults used by fresh sessions.
