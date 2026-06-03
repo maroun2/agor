@@ -115,18 +115,52 @@ export function getDefaultModelForTool(tool: AgenticToolName): string | undefine
   }
 }
 
+/** Extract model-less overrides that are safe to carry onto a fallback model. */
+function getModelLessFallbackOverrides(
+  input: ModelConfigInput | undefined | null
+): ModelConfigInput | undefined {
+  if (input?.effort === undefined) return undefined;
+  return { effort: input.effort };
+}
+
 /**
- * `resolveModelConfigPrecedence` plus a final fallback to the tool's static
- * default. Use this at the session-create boundary.
+ * Resolve model config at a session-create boundary.
+ *
+ * Full model configs remain first-wins and are not merged with lower-priority
+ * sources. However, a higher-priority source that only carries `effort` (from
+ * the UI's separate effort selector) is merged onto the next source that
+ * supplies the actual model, or onto the tool fallback. We intentionally do not
+ * carry model-less `mode` / `provider` because their meaning depends on the
+ * missing model value. This prevents partial persisted model_config objects
+ * while preserving the user's explicit effort choice.
  */
 export function resolveModelConfigWithFallback(
   tool: AgenticToolName,
   sources: Array<ModelConfigInput | undefined | null>,
   opts?: { now?: Date }
 ): ResolvedModelConfig | undefined {
-  const fromSources = resolveModelConfigPrecedence(sources, opts);
-  if (fromSources) return fromSources;
+  let pendingModelLessOverrides: ModelConfigInput | undefined;
+
+  for (const source of sources) {
+    if (source?.model) {
+      return resolveModelConfig(
+        pendingModelLessOverrides
+          ? { ...source, ...pendingModelLessOverrides, model: source.model }
+          : source,
+        opts
+      );
+    }
+    if (!pendingModelLessOverrides) {
+      pendingModelLessOverrides = getModelLessFallbackOverrides(source);
+    }
+  }
+
   const toolDefault = getDefaultModelForTool(tool);
   if (!toolDefault) return undefined;
-  return resolveModelConfig({ mode: 'alias', model: toolDefault }, opts);
+  return resolveModelConfig(
+    pendingModelLessOverrides
+      ? { mode: 'alias', ...pendingModelLessOverrides, model: toolDefault }
+      : { mode: 'alias', model: toolDefault },
+    opts
+  );
 }
