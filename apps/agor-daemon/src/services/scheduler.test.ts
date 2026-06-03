@@ -1,3 +1,4 @@
+import { resolvePermissionConfig } from '@agor/core/sessions';
 import type { Branch, Schedule } from '@agor/core/types';
 import { describe, expect, it } from 'vitest';
 import { renderSchedulePrompt } from './scheduler';
@@ -44,6 +45,46 @@ function makeSchedule(overrides: Partial<Schedule> = {}): Schedule {
 }
 
 const NOW = Date.parse('2026-05-24T15:00:00Z');
+
+// Verifies the permission_config resolution contract that the scheduler relies on
+// when building scheduled sessions (scheduler.ts lines ~640-646).
+// Before the fix the scheduler passed { mode } only for codex; it must now
+// include the codex sub-config (sandboxMode / approvalPolicy / networkAccess).
+describe('resolvePermissionConfig — codex sub-config', () => {
+  it('includes codex sub-config for codex tool with bypassPermissions mode', () => {
+    const result = resolvePermissionConfig({
+      effectiveTool: 'codex',
+      overrides: { permissionMode: 'bypassPermissions' },
+    });
+    expect(result.mode).toBe('allow-all');
+    expect(result.codex).toBeDefined();
+    expect(result.codex?.sandboxMode).toBeDefined();
+    expect(result.codex?.approvalPolicy).toBeDefined();
+    expect(result.codex?.networkAccess).toBeDefined();
+  });
+
+  it('includes codex sub-config for codex tool with auto mode', () => {
+    const result = resolvePermissionConfig({
+      effectiveTool: 'codex',
+      overrides: { permissionMode: 'auto' },
+    });
+    expect(result.mode).toBe('auto');
+    expect(result.codex).toEqual({
+      sandboxMode: 'workspace-write',
+      approvalPolicy: 'on-request',
+      networkAccess: false,
+    });
+  });
+
+  it('does NOT add codex sub-config for claude-code tool', () => {
+    const result = resolvePermissionConfig({
+      effectiveTool: 'claude-code',
+      overrides: { permissionMode: 'auto' },
+    });
+    expect(result.mode).toBe('auto');
+    expect(result.codex).toBeUndefined();
+  });
+});
 
 describe('renderSchedulePrompt', () => {
   it('renders {{branch.*}} fields (canonical names)', () => {

@@ -60,7 +60,7 @@ import {
   UsersRepository,
 } from '@agor/core/db';
 import { Forbidden } from '@agor/core/feathers';
-import { resolveSessionDefaults } from '@agor/core/sessions';
+import { resolvePermissionConfig, resolveSessionDefaults } from '@agor/core/sessions';
 import type {
   Branch,
   MCPServerID,
@@ -637,9 +637,27 @@ export class SchedulerService {
           ? `${schedule.name} — manual @ ${new Date(scheduledRunAt).toISOString()}`
           : `${schedule.name} — ${new Date(scheduledRunAt).toISOString()}`,
         contextFiles: cfg.context_files ?? [],
-        permission_config: cfg.permission_mode
-          ? { mode: cfg.permission_mode as PermissionMode }
-          : undefined,
+        // For codex sessions, always resolve the full permission_config so
+        // that the executor receives sandboxMode / approvalPolicy / networkAccess
+        // from the mapped mode rather than relying on its own last-line fallback.
+        // For other tools (claude-code, gemini, …) preserve existing behaviour:
+        // omit permission_config when no mode is explicitly set by the schedule.
+        permission_config:
+          cfg.agentic_tool === 'codex'
+            ? resolvePermissionConfig({
+                effectiveTool: 'codex',
+                overrides: cfg.permission_mode
+                  ? { permissionMode: cfg.permission_mode as PermissionMode }
+                  : undefined,
+                userToolDefaults: creator?.default_agentic_config?.codex,
+              })
+            : cfg.permission_mode
+              ? resolvePermissionConfig({
+                  effectiveTool: cfg.agentic_tool,
+                  overrides: { permissionMode: cfg.permission_mode as PermissionMode },
+                  userToolDefaults: creator?.default_agentic_config?.[cfg.agentic_tool],
+                })
+              : undefined,
         // DefaultModelConfig → Session.model_config. If the schedule
         // only sets ancillary fields (e.g. Claude effort), resolve them
         // against the same model defaults used by fresh sessions.
