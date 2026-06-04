@@ -106,8 +106,11 @@ export function scheduleConfigToDefaultConfig(
     modelConfig: cfg.model_config,
     permissionMode: cfg.permission_mode,
     mcpServerIds: cfg.mcp_server_ids,
-    // Codex fields aren't surfaced in ScheduleAgenticToolConfig today;
-    // promote them here if/when schedules grow codex sandbox controls.
+    ...(cfg.agentic_tool === 'codex' && {
+      codexSandboxMode: cfg.codex_sandbox_mode,
+      codexApprovalPolicy: cfg.codex_approval_policy,
+      codexNetworkAccess: cfg.codex_network_access,
+    }),
   };
 }
 
@@ -129,6 +132,11 @@ export function buildScheduleConfigFromFormValues(
     model_config: builtDefault.modelConfig,
     mcp_server_ids: builtDefault.mcpServerIds,
     context_files: previous?.context_files,
+    // Codex fields: set when tool is codex, clear when switching away
+    // (prevents stale values lingering from a previous codex config).
+    codex_sandbox_mode: tool === 'codex' ? builtDefault.codexSandboxMode : undefined,
+    codex_approval_policy: tool === 'codex' ? builtDefault.codexApprovalPolicy : undefined,
+    codex_network_access: tool === 'codex' ? builtDefault.codexNetworkAccess : undefined,
   };
 }
 

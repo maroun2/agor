@@ -8,16 +8,16 @@
  *   MCP servers.
  * - Ghost `<Collapse>` with two panels for the secondary zone:
  *     1. "Agentic Tool Configuration" — same `AgenticToolConfigForm`
- *        component the session modal uses, in `compact` mode + with
- *        `hideMcpServers` (the MCP field is promoted to the primary
- *        zone above).
+ *        component the session modal uses, with `hideMcpServers` (the
+ *        MCP field is promoted to the primary zone above). Full mode
+ *        (not compact) so Codex-specific fields render.
  *     2. "Schedule Settings" — retention + concurrency (schedule-specific).
  *
  * Reuses the same building blocks as `NewSessionModal`:
  * - `AgentSelectionGrid` (with `variant="select"` here vs `cards` there —
  *   schedules don't need to merchandise the agent choice).
  * - `SessionMcpServersField` as a top-level form field.
- * - `AgenticToolConfigForm` with `hideMcpServers + compact`.
+ * - `AgenticToolConfigForm` with `hideMcpServers`.
  * - `getFormValuesFromConfig` / `buildConfigFromFormValues` to translate
  *   between form values and the schedule's `agentic_tool_config` jsonb.
  *
@@ -401,7 +401,6 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                   agenticTool={agentTool}
                   mcpServerById={mcpServerById}
                   hideMcpServers
-                  compact
                   client={client}
                 />
               ),

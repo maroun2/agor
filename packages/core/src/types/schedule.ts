@@ -1,5 +1,5 @@
 // src/types/schedule.ts
-import type { AgenticToolName } from './agentic-tool';
+import type { AgenticToolName, CodexApprovalPolicy, CodexSandboxMode } from './agentic-tool';
 import type { BranchID, SessionID, UUID } from './id';
 import type { PermissionMode } from './session';
 import type { DefaultModelConfig } from './user';
@@ -61,6 +61,15 @@ export interface ScheduleAgenticToolConfig {
 
   /** Additional context files to load into the spawned session. */
   context_files?: string[];
+
+  /** Codex-specific: sandbox mode (where Codex can write). */
+  codex_sandbox_mode?: CodexSandboxMode;
+
+  /** Codex-specific: approval policy (whether Codex asks before executing). */
+  codex_approval_policy?: CodexApprovalPolicy;
+
+  /** Codex-specific: network access (outbound HTTP/HTTPS). */
+  codex_network_access?: boolean;
 }
 
 /**
