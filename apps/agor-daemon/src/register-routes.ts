@@ -793,14 +793,24 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           throw new Error('Cannot send prompt: session is currently stopping');
         }
 
-        // Queue guard
+        // Queue guard — only ACTIVE sessions queue new prompts. Terminal states
+        // (completed / failed / timed_out) accept prompts directly: nothing is
+        // running, and nothing will ever drain the queue for them (the queue only
+        // drains when a session is patched to idle), so queueing would strand the
+        // message until something else resets the session.
+        const BUSY_STATUSES: SessionStatus[] = [
+          SessionStatus.RUNNING,
+          SessionStatus.STOPPING,
+          SessionStatus.AWAITING_PERMISSION,
+          SessionStatus.AWAITING_INPUT,
+        ];
         const isInternalCall = !params.provider;
         if (!((data as Record<string, unknown>)._fromQueue && isInternalCall)) {
           const queueCheckRepo = new MessagesRepository(db);
           const queuedItems = await queueCheckRepo.findQueued(id as SessionID);
           const hasQueuedItems = queuedItems.length > 0;
 
-          if (session.status !== SessionStatus.IDLE || hasQueuedItems) {
+          if (BUSY_STATUSES.includes(session.status) || hasQueuedItems) {
             const queuedMessage = await queueCheckRepo.createQueued(id as SessionID, data.prompt, {
               queued_by_user_id: params.user?.user_id,
             });
@@ -812,7 +822,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
             app.service('messages').emit('queued', queuedMessage);
 
-            if (session.status === SessionStatus.IDLE) {
+            if (!BUSY_STATUSES.includes(session.status)) {
               setImmediate(async () => {
                 try {
                   await sessionsService.triggerQueueProcessing(id as SessionID, params);
@@ -1508,7 +1518,15 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
     const session = await sessionsService.get(sessionId, messageParams);
 
-    if (session.status !== SessionStatus.IDLE) {
+    // Only ACTIVE sessions block queue draining. Terminal states (completed /
+    // failed / timed_out) are safe to prompt — treating them as busy would strand
+    // queued messages forever, since only a patch to idle re-triggers draining.
+    if (
+      session.status === SessionStatus.RUNNING ||
+      session.status === SessionStatus.STOPPING ||
+      session.status === SessionStatus.AWAITING_PERMISSION ||
+      session.status === SessionStatus.AWAITING_INPUT
+    ) {
       console.log(
         `⏸️  [Queue] Session ${sessionId.substring(0, 8)} is ${session.status}, message ${nextMessage.message_id.substring(0, 8)} waiting in queue ` +
           `(will be processed when session becomes IDLE via patch hook)`
